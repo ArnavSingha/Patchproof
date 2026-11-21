@@ -272,3 +272,68 @@ def test_model_immutability():
 
     with pytest.raises(ValidationError):
         patch.file_deltas[0].path = "tampered/path.py"
+
+
+def test_diff_with_quoted_paths_containing_spaces():
+    """Verify git diff headers with quoted paths containing spaces parse correctly."""
+    diff = """\
+diff --git "a/path with space/file name.py" "b/path with space/file name.py"
+--- "a/path with space/file name.py"
++++ "b/path with space/file name.py"
+@@ -1,2 +1,2 @@
+ old
+-line 1
++line 2
+"""
+    patch = parse_patch(diff)
+    assert patch.total_files == 1
+    assert patch.file_deltas[0].path == "path with space/file name.py"
+    assert patch.file_deltas[0].total_added_lines == 1
+
+
+def test_mode_only_change():
+    """Verify git diff with mode change only and no content hunks."""
+    diff = """\
+diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+"""
+    patch = parse_patch(diff)
+    assert patch.total_files == 1
+    delta = patch.file_deltas[0]
+    assert delta.path == "script.sh"
+    assert delta.change_type == ChangeType.MODIFY
+    assert len(delta.hunks) == 0
+
+
+def test_pure_rename_diff():
+    """Verify 100% similarity pure rename without hunks."""
+    diff = """\
+diff --git a/old_name.py b/new_name.py
+similarity index 100%
+rename from old_name.py
+rename to new_name.py
+"""
+    patch = parse_patch(diff)
+    assert patch.total_files == 1
+    delta = patch.file_deltas[0]
+    assert delta.path == "new_name.py"
+    assert delta.change_type == ChangeType.MODIFY
+    assert delta.old_path == "old_name.py"
+    assert delta.new_path == "new_name.py"
+    assert len(delta.hunks) == 0
+
+
+def test_standalone_binary_diff():
+    """Verify binary file diff line."""
+    diff = """\
+diff --git a/logo.png b/logo.png
+Binary files a/logo.png and b/logo.png differ
+"""
+    patch = parse_patch(diff)
+    assert patch.total_files == 1
+    delta = patch.file_deltas[0]
+    assert delta.path == "logo.png"
+    assert delta.is_binary is True
+    assert delta.change_type == ChangeType.MODIFY
+

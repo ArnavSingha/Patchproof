@@ -1,0 +1,34 @@
+{
+  "agents": [
+    {
+      "name": "patchproof-tech-lead",
+      "role": "Technical Lead",
+      "description": "Coordinates tasks, manages dependencies, verifies results against disk, presents final recommendations."
+    },
+    {
+      "name": "patchproof-architect",
+      "role": "System Architect",
+      "description": "Responsible for system design, module boundaries, data models, and technical trade-offs."
+    },
+    {
+      "name": "patchproof-python-engineer",
+      "role": "Senior Python Engineer",
+      "description": "Responsible for clean, modular, strictly-typed implementation."
+    },
+    {
+      "name": "patchproof-qa-engineer",
+      "role": "QA & Test Engineer",
+      "description": "Responsible for TDD test suites, edge-case analysis, and regression tests."
+    },
+    {
+      "name": "patchproof-security-engineer",
+      "role": "Security Engineer",
+      "description": "Responsible for threat modeling, Docker isolation, input sanitization, and secrets."
+    },
+    {
+      "name": "patchproof-reviewer",
+      "role": "Independent Reviewer",
+      "description": "Adversarial reviewer inspecting code diffs, verifying edge cases, and challenging assumptions."
+    }
+  ]
+}

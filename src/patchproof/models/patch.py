@@ -9,6 +9,7 @@ class PatchType(StrEnum):
     """Supported patch format types."""
 
     UNIFIED_DIFF = "unified_diff"
+    SEARCH_REPLACE = "search_replace"
 
 
 class ChangeType(StrEnum):
