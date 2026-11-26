@@ -112,6 +112,30 @@ patchproof install-hooks
 
 ---
 
+## GitHub Action Integration
+
+Add PatchProof verification, predictive test slicing, and Anti-Cheat PR gating to your repository in 3 lines:
+
+```yaml
+name: PatchProof Verification
+on: [pull_request, push]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ArnavSingha/Patchproof@main
+        with:
+          slice: true
+          anti_cheat: true
+          comment_pr: true
+```
+
+When triggered on a pull request, PatchProof automatically posts a rich, interactive **Proof Card** comment, updates `$GITHUB_STEP_SUMMARY`, and fails-closed if any test was weakened, deleted, or regressed.
+
+---
+
 ## MCP Server Integration
 
 PatchProof includes a built-in MCP server for AI coding assistants. Configure your MCP client:

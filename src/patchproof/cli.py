@@ -50,6 +50,7 @@ from patchproof.reporting.certificate import (
 )
 from patchproof.reporting.diagnostic import AISelfHealingReport, generate_ai_feedback
 from patchproof.reporting.html_report import generate_html_report
+from patchproof.reporting.markdown import generate_markdown_summary
 from patchproof.sandbox.comparative import ComparativeRunner
 from patchproof.sandbox.docker_cli import parse_test_command
 from patchproof.sandbox.doctor import SystemDoctor
@@ -183,6 +184,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help="Write cryptographic Proof-of-Patch certificate to specified path",
+    )
+    verify_parser.add_argument(
+        "--markdown",
+        "--summary-file",
+        default=None,
+        metavar="PATH",
+        help="Write GitHub-Flavored Markdown summary proof card to specified path",
     )
 
     setup_runner_parser = subparsers.add_parser(
@@ -739,6 +747,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ai_diag = generate_ai_feedback(result, patch=canonical_p)
         sys.stderr.write(ai_diag.prompt_feedback + "\n")
 
+    cert_obj: ProofCertificate | None = None
     if args.cert:
         cert_out = pathlib.Path(args.cert)
         try:
@@ -748,6 +757,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sys.stdout.write(f"patchproof: Proof-of-Patch certificate written to {cert_out}\n")
         except Exception as err:
             sys.stderr.write(f"patchproof: error: failed to write certificate: {err}\n")
+
+    if args.markdown:
+        md_out = pathlib.Path(args.markdown)
+        try:
+            md_content = generate_markdown_summary(
+                result, cert=cert_obj, patch_content=patch_content
+            )
+            md_out.parent.mkdir(parents=True, exist_ok=True)
+            md_out.write_text(md_content, encoding="utf-8")
+            if not args.json:
+                sys.stdout.write(f"patchproof: Markdown summary card written to {md_out}\n")
+        except OSError as err:
+            sys.stderr.write(f"patchproof: error: failed to write Markdown summary: {err}\n")
 
     if args.json:
         sys.stdout.write(format_json_report(result, patch_content=patch_content) + "\n")

@@ -752,3 +752,51 @@ class TestCliReporting:
 
         ret = main(["heal", str(patch_file), "--repo", str(tmp_path)])
         assert ret == ExitCode.ACCEPTED
+
+    @patch("patchproof.cli.ComparativeRunner")
+    def test_main_verify_with_markdown_summary(
+        self,
+        mock_runner_cls: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        patch_file = tmp_path / "test.patch"
+        patch_file.write_text("--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-1\n+2\n")
+        md_file = tmp_path / "summary.md"
+        cert_file = tmp_path / "cert.json"
+
+        mock_runner = MagicMock()
+        mock_result = MagicMock(
+            verdict=PatchVerdict.ACCEPTED,
+            summary="Clean preservation",
+            introduced_regressions_count=0,
+            resolved_defects_count=0,
+            removed_tests_count=0,
+            suppressed_tests_count=0,
+            test_tampering_detected=False,
+            tampering_details=(),
+            test_comparisons=(),
+            baseline_result=MagicMock(exit_code=0, duration_seconds=0.01, test_report=None),
+            patched_result=MagicMock(
+                exit_code=0, duration_seconds=0.01, stderr="", test_report=None
+            ),
+        )
+        mock_runner.run.return_value = mock_result
+        mock_runner_cls.return_value = mock_runner
+
+        ret = main([
+            "verify",
+            str(patch_file),
+            "--repo",
+            str(tmp_path),
+            "--cert",
+            str(cert_file),
+            "--markdown",
+            str(md_file),
+        ])
+
+        assert ret == ExitCode.ACCEPTED
+        assert md_file.is_file()
+        content = md_file.read_text(encoding="utf-8")
+        assert "<!-- patchproof-attestation-marker -->" in content
+        assert "ACCEPTED" in content
+        assert cert_file.is_file()

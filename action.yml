@@ -1,0 +1,206 @@
+name: "PatchProof Code Verification & Attestation"
+description: "Deterministic sandbox verification, predictive test slicing, anti-cheat test auditing, and cryptographic proof cards for AI-assisted engineering"
+author: "PatchProof Team"
+branding:
+  icon: "shield-check"
+  color: "green"
+
+inputs:
+  target:
+    description: "Verification target: 'head' (latest commit) or 'git' (working tree diff)"
+    required: false
+    default: "head"
+  slice:
+    description: "Enable predictive AST test slicing (< 5ms)"
+    required: false
+    default: "true"
+  anti_cheat:
+    description: "Enforce Anti-Cheat test tampering guard (reject test deletions/assertion drops)"
+    required: false
+    default: "true"
+  disambiguate_flakes:
+    description: "Re-run introduced regressions 3x in sandbox to filter non-deterministic flakes"
+    required: false
+    default: "true"
+  test_command:
+    description: "Optional custom test execution command (e.g. 'pytest tests/ -q' or 'npm test')"
+    required: false
+  image:
+    description: "Docker runner container image (default: auto-detected)"
+    required: false
+  html_report:
+    description: "Path to output standalone visual HTML evidence report"
+    required: false
+    default: "patchproof-report.html"
+  cert:
+    description: "Path to output cryptographic Proof-of-Patch certificate"
+    required: false
+    default: "patchproof.cert.json"
+  comment_pr:
+    description: "Automatically post/update rich Markdown proof card as a PR comment"
+    required: false
+    default: "true"
+  github_token:
+    description: "GitHub token for posting PR comments and step summaries"
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: "Evaluation verdict: accepted, rejected, suspicious, or inconclusive"
+    value: ${{ steps.run-patchproof.outputs.verdict }}
+  cert_path:
+    description: "Path to generated cryptographic ProofCertificate"
+    value: ${{ steps.run-patchproof.outputs.cert_path }}
+  summary_path:
+    description: "Path to generated Markdown summary card"
+    value: ${{ steps.run-patchproof.outputs.summary_path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install PatchProof
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install .
+
+    - name: Run PatchProof Doctor
+      shell: bash
+      run: |
+        patchproof doctor --fix
+
+    - name: Execute PatchProof Verification
+      id: run-patchproof
+      shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_SLICE: ${{ inputs.slice }}
+        INPUT_ANTI_CHEAT: ${{ inputs.anti_cheat }}
+        INPUT_DISAMBIGUATE_FLAKES: ${{ inputs.disambiguate_flakes }}
+        INPUT_TEST_COMMAND: ${{ inputs.test_command }}
+        INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_HTML_REPORT: ${{ inputs.html_report }}
+        INPUT_CERT: ${{ inputs.cert }}
+      run: |
+        ARGS=("verify")
+        if [ "$INPUT_TARGET" = "head" ]; then
+          ARGS+=("--head")
+        else
+          ARGS+=("--git")
+        fi
+
+        if [ "$INPUT_SLICE" = "true" ]; then
+          ARGS+=("--slice")
+        fi
+
+        if [ "$INPUT_ANTI_CHEAT" = "false" ]; then
+          ARGS+=("--allow-test-edits")
+        fi
+
+        if [ "$INPUT_DISAMBIGUATE_FLAKES" = "true" ]; then
+          ARGS+=("--disambiguate-flakes")
+        fi
+
+        if [ -n "$INPUT_TEST_COMMAND" ]; then
+          ARGS+=("-c" "$INPUT_TEST_COMMAND")
+        fi
+
+        if [ -n "$INPUT_IMAGE" ]; then
+          ARGS+=("--image" "$INPUT_IMAGE")
+        fi
+
+        if [ -n "$INPUT_HTML_REPORT" ]; then
+          ARGS+=("--html" "$INPUT_HTML_REPORT")
+        fi
+
+        if [ -n "$INPUT_CERT" ]; then
+          ARGS+=("--cert" "$INPUT_CERT")
+        fi
+
+        SUMMARY_FILE="patchproof-summary.md"
+        ARGS+=("--markdown" "$SUMMARY_FILE")
+
+        set +e
+        patchproof "${ARGS[@]}"
+        EXIT_CODE=$?
+
+        case $EXIT_CODE in
+          0) VERDICT="accepted" ;;
+          1) VERDICT="rejected" ;;
+          2) VERDICT="suspicious" ;;
+          3) VERDICT="inconclusive" ;;
+          4) VERDICT="infrastructure_failure" ;;
+          *) VERDICT="error" ;;
+        esac
+
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        echo "cert_path=$INPUT_CERT" >> "$GITHUB_OUTPUT"
+        echo "summary_path=$SUMMARY_FILE" >> "$GITHUB_OUTPUT"
+
+        if [ -n "$GITHUB_STEP_SUMMARY" ] && [ -f "$SUMMARY_FILE" ]; then
+          cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        exit $EXIT_CODE
+
+    - name: Post PR Comment
+      if: always() && inputs.comment_pr == 'true' && github.event_name == 'pull_request' && inputs.github_token != ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+        SUMMARY_FILE: ${{ steps.run-patchproof.outputs.summary_path }}
+      run: |
+        if [ -f "$SUMMARY_FILE" ]; then
+          python -c "
+        import json, os, urllib.request
+
+        token = os.environ.get('GITHUB_TOKEN')
+        repo = os.environ.get('REPO')
+        pr_number = os.environ.get('PR_NUMBER')
+        summary_file = os.environ.get('SUMMARY_FILE')
+
+        if not (token and repo and pr_number and summary_file and os.path.isfile(summary_file)):
+            exit(0)
+
+        with open(summary_file, 'r', encoding='utf-8') as f:
+            body = f.read()
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'PatchProof-Action',
+        }
+
+        marker = '<!-- patchproof-attestation-marker -->'
+        url = f'https://api.github.com/repos/{repo}/issues/{pr_number}/comments'
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req) as resp:
+                comments = json.loads(resp.read().decode())
+            existing_id = None
+            for c in comments:
+                if marker in c.get('body', ''):
+                    existing_id = c['id']
+                    break
+
+            payload = json.dumps({'body': body}).encode('utf-8')
+            if existing_id:
+                update_url = f'https://api.github.com/repos/{repo}/issues/comments/{existing_id}'
+                req = urllib.request.Request(update_url, data=payload, headers=headers, method='PATCH')
+            else:
+                req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+
+            with urllib.request.urlopen(req) as resp:
+                pass
+        except Exception as e:
+            print(f'Warning: failed to post PR comment: {e}')
+        "
+        fi
