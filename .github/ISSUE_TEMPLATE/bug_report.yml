@@ -1,0 +1,37 @@
+name: Bug Report
+description: Create a report to help us improve PatchProof
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of what the bug is.
+      placeholder: Tell us what you see!
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal commands or patch file to reproduce the behavior.
+      placeholder: |
+        1. Run `patchproof verify --patch bad.patch --repo .`
+        2. See error
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Info
+      description: OS, Python version, Docker version (if using sandbox).
+      placeholder: |
+        - OS: Windows 11 / Linux / macOS
+        - Python: 3.11
+        - PatchProof version: 0.1.0
+    validations:
+      required: false

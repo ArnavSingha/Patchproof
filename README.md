@@ -1,5 +1,11 @@
 # PatchProof
 
+[![CI](https://github.com/ArnavSingha/Patchproof/actions/workflows/ci.yml/badge.svg)](https://github.com/ArnavSingha/Patchproof/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
+
 **Deterministic Code-Patch Verification & Reliability Engine for AI-Assisted Engineering**
 
 PatchProof is an independent verification subsystem designed to evaluate, test, and validate AI-generated code patches (from Aider, Claude Code, Cursor, Copilot, etc.) using syntax validation, isolated container sandboxes, test-integrity analysis, and regression verification.
