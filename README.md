@@ -61,8 +61,8 @@ patchproof verify --head
 # Print high-density AI diagnostic prompt if regressions occur
 patchproof verify --git --ai-feedback
 
-# Generate a visual HTML report and a cryptographic Proof-of-Patch certificate
-patchproof verify changes.patch --html report.html --cert cert.json
+# Generate a visual HTML report, Proof-of-Patch certificate, and SVG badge
+patchproof verify changes.patch --html report.html --cert cert.json --badge badge.svg
 ```
 
 ### 2. Autonomous Patch Self-Healing
@@ -105,6 +105,9 @@ patchproof doctor --fix
 
 # Build standard local Docker runner image
 patchproof setup-runner
+
+# Build tailored runner pre-caching repository dependencies (sub-second zero-network tests)
+patchproof setup-runner --from-repo .
 
 # Install Git pre-commit verification hook
 patchproof install-hooks
@@ -158,7 +161,7 @@ Or run `patchproof init-agent cursor` to automatically configure your `.cursor/m
 ## Development & Testing
 
 ```bash
-# Run unit and integration tests (355+ tests)
+# Run unit and integration tests (385+ tests)
 pytest
 
 # Code formatting and linting

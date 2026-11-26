@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 from patchproof.exceptions import DockerUnavailableError
 from patchproof.sandbox.docker_cli import DockerPreflightResult
 from patchproof.sandbox.setup_runner import (
+    build_runner_from_repo,
     build_runner_image,
+    generate_ephemeral_dockerfile,
     resolve_default_dockerfile,
 )
 
@@ -206,3 +208,60 @@ class TestSetupRunner:
 
         assert code == 1
         assert "timed out after 30.0 seconds" in stderr_buf.getvalue()
+
+    def test_generate_ephemeral_dockerfile_with_requirements(self, tmp_path: pathlib.Path) -> None:
+        (tmp_path / "requirements.txt").write_text("fastapi>=0.100.0\npytest\n", encoding="utf-8")
+        dockerfile_str, manifests = generate_ephemeral_dockerfile(tmp_path)
+
+        assert "FROM patchproof-runner-python:3.11" in dockerfile_str
+        assert "requirements.txt" in dockerfile_str
+        assert "pip install" in dockerfile_str
+        assert len(manifests) == 1
+        assert manifests[0].name == "requirements.txt"
+
+    def test_generate_ephemeral_dockerfile_with_pyproject(self, tmp_path: pathlib.Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
+        )
+        dockerfile_str, manifests = generate_ephemeral_dockerfile(tmp_path)
+
+        assert "FROM patchproof-runner-python:3.11" in dockerfile_str
+        assert "pyproject.toml" in dockerfile_str
+        assert len(manifests) == 1
+        assert manifests[0].name == "pyproject.toml"
+
+    @patch("patchproof.sandbox.setup_runner.DockerPreflight.check")
+    @patch("subprocess.run")
+    def test_build_runner_from_repo_builds_and_tags(
+        self,
+        mock_run: MagicMock,
+        mock_preflight: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        mock_preflight.return_value = DockerPreflightResult(
+            is_available=True,
+            os_type="linux",
+            binary_path="/usr/bin/docker",
+        )
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["docker", "build"],
+            returncode=0,
+            stdout="Successfully built custom-image",
+            stderr="",
+        )
+
+        repo = tmp_path / "my_project"
+        repo.mkdir()
+        (repo / "requirements.txt").write_text("requests\n", encoding="utf-8")
+
+        stdout_buf = io.StringIO()
+        code, tag = build_runner_from_repo(
+            repo_path=repo,
+            stdout_stream=stdout_buf,
+            stderr_stream=io.StringIO(),
+        )
+
+        assert code == 0
+        assert "patchproof-runner-my-project:latest" in tag
+        assert mock_run.called
+

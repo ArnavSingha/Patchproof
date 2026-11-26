@@ -42,6 +42,7 @@ from patchproof.models.sandbox import (
     RegressionClassification,
     ResourceLimits,
 )
+from patchproof.reporting.badge import generate_svg_badge
 from patchproof.reporting.certificate import (
     ProofCertificate,
     export_certificate,
@@ -54,7 +55,11 @@ from patchproof.reporting.markdown import generate_markdown_summary
 from patchproof.sandbox.comparative import ComparativeRunner
 from patchproof.sandbox.docker_cli import parse_test_command
 from patchproof.sandbox.doctor import SystemDoctor
-from patchproof.sandbox.setup_runner import DEFAULT_RUNNER_TAG, build_runner_image
+from patchproof.sandbox.setup_runner import (
+    DEFAULT_RUNNER_TAG,
+    build_runner_from_repo,
+    build_runner_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,10 +197,22 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Write GitHub-Flavored Markdown summary proof card to specified path",
     )
+    verify_parser.add_argument(
+        "--badge",
+        default=None,
+        metavar="PATH",
+        help="Write standalone SVG verification badge to specified path",
+    )
 
     setup_runner_parser = subparsers.add_parser(
         "setup-runner",
         help="Build standard PatchProof test runner container image locally",
+    )
+    setup_runner_parser.add_argument(
+        "--from-repo",
+        default=None,
+        metavar="PATH",
+        help="Inspect repository dependencies (requirements, pyproject) and build runner",
     )
     setup_runner_parser.add_argument(
         "--tag",
@@ -464,6 +481,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "setup-runner":
+        if args.from_repo:
+            target_repo = pathlib.Path(args.from_repo).resolve()
+            res_code, _assigned_tag = build_runner_from_repo(
+                repo_path=target_repo,
+                image_tag=args.tag if args.tag != DEFAULT_RUNNER_TAG else None,
+                no_cache=args.no_cache,
+                quiet=args.quiet,
+            )
+            return ExitCode.ACCEPTED if res_code == 0 else ExitCode.CLI_ERROR
+
         dockerfile = pathlib.Path(args.dockerfile) if args.dockerfile else None
         res_code = build_runner_image(
             image_tag=args.tag,
@@ -770,6 +797,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sys.stdout.write(f"patchproof: Markdown summary card written to {md_out}\n")
         except OSError as err:
             sys.stderr.write(f"patchproof: error: failed to write Markdown summary: {err}\n")
+
+    if args.badge:
+        badge_out = pathlib.Path(args.badge)
+        try:
+            badge_content = generate_svg_badge(result)
+            badge_out.parent.mkdir(parents=True, exist_ok=True)
+            badge_out.write_text(badge_content, encoding="utf-8")
+            if not args.json:
+                sys.stdout.write(f"patchproof: SVG badge written to {badge_out}\n")
+        except OSError as err:
+            sys.stderr.write(f"patchproof: error: failed to write SVG badge: {err}\n")
 
     if args.json:
         sys.stdout.write(format_json_report(result, patch_content=patch_content) + "\n")
