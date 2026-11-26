@@ -178,15 +178,27 @@ class SystemDoctor:
                     True,
                 )
             stderr_msg = res.stderr.strip() or "Daemon unreachable"
+            sys_os = platform.system().lower()
+            if sys_os == "darwin":
+                remed = (
+                    "Start Docker Desktop by running 'open -a Docker' or launching Applications"
+                )
+            elif sys_os == "linux":
+                remed = (
+                    "Start Docker daemon by running 'sudo systemctl start docker' "
+                    "or 'sudo service docker start'"
+                )
+            else:
+                remed = (
+                    "Start Docker Desktop or run 'sudo systemctl start docker' "
+                    "and verify daemon is running"
+                )
             return (
                 DoctorCheckResult(
                     name="Docker Daemon",
                     passed=False,
                     details=f"Daemon not reachable: {stderr_msg}",
-                    remediation=(
-                        "Start Docker Desktop or run 'sudo systemctl start docker' "
-                        "and verify daemon is running"
-                    ),
+                    remediation=remed,
                 ),
                 False,
             )
@@ -440,6 +452,28 @@ class SystemDoctor:
         results.append(self.check_runner_image_compatibility(image_tag, image_exists))
 
         return results
+
+    def auto_remediate(self, image_tag: str = DEFAULT_RUNNER_TAG) -> list[str]:
+        """Automatically remediate repairable environment issues where possible."""
+        actions: list[str] = []
+        _, daemon_active = self.check_docker_daemon()
+        if not daemon_active:
+            actions.append("Docker daemon is offline; cannot auto-remediate container image.")
+            return actions
+
+        _, image_exists = self.check_runner_image_exists(image_tag, daemon_active=True)
+        if not image_exists:
+            from patchproof.sandbox.setup_runner import build_runner_image
+
+            try:
+                build_runner_image(image_tag=image_tag)
+                actions.append(f"Successfully built runner container image '{image_tag}'.")
+            except Exception as exc:
+                actions.append(f"Failed to auto-build runner image '{image_tag}': {exc}")
+        else:
+            actions.append(f"Runner container image '{image_tag}' is already present.")
+
+        return actions
 
     def format_report(
         self,

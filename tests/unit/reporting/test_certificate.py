@@ -57,6 +57,7 @@ def test_generate_and_verify_valid_certificate() -> None:
     assert cert.passed_tests == 1
     assert cert.introduced_regressions == 0
     assert cert.sandbox_isolated is True
+    assert cert.anti_cheat_passed is True
     assert len(cert.signature) == 64  # SHA-256 hex string
 
     # Verification must pass with matching secret key
@@ -95,3 +96,35 @@ def test_export_and_import_certificate(tmp_path: pathlib.Path) -> None:
 
     assert loaded_cert.signature == cert.signature
     assert verify_certificate(loaded_cert, secret_key="test-key") is True
+
+
+def test_certificate_reflects_tampering_audit_failure() -> None:
+    """When test tampering is detected, certificate must reflect anti_cheat_passed=False."""
+    t_case = TestCaseResult(name="test_1", outcome=TestOutcome.PASS, duration_seconds=0.01)
+    report = TestRunReport(
+        test_cases=(t_case,), exit_code=0, duration_seconds=0.01, total_collected=1
+    )
+    exec_res = ExecutionResult(exit_code=0, duration_seconds=0.01, test_report=report)
+    comparison = ComparativeTestCase(
+        test_name="test_1",
+        baseline_outcome=TestOutcome.PASS,
+        patched_outcome=TestOutcome.PASS,
+        classification=RegressionClassification.CLEAN_PRESERVATION,
+    )
+    result = ComparativeExecutionResult(
+        baseline_result=exec_res,
+        patched_result=exec_res,
+        verdict=PatchVerdict.SUSPICIOUS,
+        test_comparisons=(comparison,),
+        introduced_regressions_count=0,
+        test_tampering_detected=True,
+        tampering_details=("Test assertion count reduced",),
+        summary="Tampering alert",
+    )
+    patch_text = "--- a/tests/test_x.py\n+++ b/tests/test_x.py\n"
+    cert = generate_certificate(result, patch_text, secret_key="test-key")
+
+    assert cert.anti_cheat_passed is False
+    assert cert.verdict == "suspicious"
+    assert verify_certificate(cert, secret_key="test-key") is True
+

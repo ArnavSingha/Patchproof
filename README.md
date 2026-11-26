@@ -14,6 +14,7 @@ PatchProof is an independent verification subsystem designed to evaluate, test, 
 
 ## Key Features
 
+- **Anti-Cheat Test Tampering Guard:** Prevents autonomous agents from evading failures by modifying the test suite. Audits AST deltas across test files to detect and reject assertion count reductions, test function deletions, and `@pytest.mark.skip` suppression injections.
 - **Isolated Container Sandboxing:** Executes tests in hardened, zero-network Docker containers (`--network none`, `--read-only`, unprivileged UID `10001:10001`, dropped capabilities) with ephemeral staging workspaces and symlink traversal defense.
 - **Predictive Test Slicing (`--slice`):** Analyzes patch AST import graphs to isolate and run only impacted tests in **< 5ms** instead of waiting for the full test suite.
 - **Spectrum-Based Fault Localization (SBFL):** Correlates failing test tracebacks directly with patch hunks, calculating an **Ochiai suspicion score** and pinpointing the exact lines of code that triggered regressions.
@@ -98,6 +99,9 @@ patchproof init-agent claude
 ```bash
 # Check host Docker daemon, Linux container mode, and environment readiness
 patchproof doctor
+
+# Automatically remediate repairable environment issues (e.g. build missing runner)
+patchproof doctor --fix
 
 # Build standard local Docker runner image
 patchproof setup-runner

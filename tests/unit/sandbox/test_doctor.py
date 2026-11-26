@@ -277,3 +277,25 @@ class TestSystemDoctor:
         assert len(data["checks"]) == 2
         assert data["checks"][0]["name"] == "Test Check 1"
         assert data["checks"][0]["passed"] is True
+
+    @patch.object(SystemDoctor, "check_docker_daemon", return_value=(MagicMock(), False))
+    def test_auto_remediate_aborts_when_daemon_offline(self, mock_daemon: MagicMock) -> None:
+        doctor = SystemDoctor()
+        actions = doctor.auto_remediate()
+        assert len(actions) == 1
+        assert "daemon is offline" in actions[0]
+
+    @patch("patchproof.sandbox.setup_runner.build_runner_image")
+    @patch.object(SystemDoctor, "check_runner_image_exists", return_value=(MagicMock(), False))
+    @patch.object(SystemDoctor, "check_docker_daemon", return_value=(MagicMock(), True))
+    def test_auto_remediate_builds_missing_image(
+        self,
+        mock_daemon: MagicMock,
+        mock_exists: MagicMock,
+        mock_build: MagicMock,
+    ) -> None:
+        doctor = SystemDoctor()
+        actions = doctor.auto_remediate("patchproof-runner-python:3.11")
+        mock_build.assert_called_once_with(image_tag="patchproof-runner-python:3.11")
+        assert len(actions) == 1
+        assert "Successfully built" in actions[0]

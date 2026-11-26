@@ -138,6 +138,7 @@ class ComparativeRunner:
         config: ContainerConfig,
         patch: CanonicalPatch | str,
         disambiguate_flakes: bool = False,
+        allow_test_edits: bool = False,
     ) -> ComparativeExecutionResult:
         """Execute baseline and patched container runs, isolating workspaces and verifying.
 
@@ -174,6 +175,15 @@ class ComparativeRunner:
                 )
         else:
             canonical_patch = patch
+
+        # Step 1b: Anti-cheat patch integrity audit
+        from patchproof.core.anti_cheat import audit_patch_integrity
+
+        anti_cheat_report = audit_patch_integrity(
+            patch=canonical_patch,
+            repo_root=config.host_repo_path,
+            allow_test_edits=allow_test_edits,
+        )
 
         # Step 2: Prepare ephemeral staging workspaces
         baseline_staging = pathlib.Path(tempfile.mkdtemp(prefix="patchproof-staging-base-"))
@@ -360,7 +370,7 @@ class ComparativeRunner:
                         f"Patch verified with {flaky_count} flaky test(s) detected; "
                         f"{remaining_regressions} confirmed regression(s)"
                     )
-                    return initial_result.model_copy(
+                    initial_result = initial_result.model_copy(
                         update={
                             "test_comparisons": tuple(new_comparisons),
                             "introduced_regressions_count": remaining_regressions,
@@ -369,6 +379,25 @@ class ComparativeRunner:
                             "summary": new_summary,
                         }
                     )
+
+            if anti_cheat_report.tampering_detected:
+                tamper_verdict = (
+                    PatchVerdict.REJECTED
+                    if anti_cheat_report.tests_deleted_count > 0
+                    else PatchVerdict.SUSPICIOUS
+                )
+                tamper_summary = (
+                    f"Test tampering detected ({anti_cheat_report.summary}); "
+                    f"raw test verdict: {initial_result.verdict.value}"
+                )
+                return initial_result.model_copy(
+                    update={
+                        "test_tampering_detected": True,
+                        "tampering_details": tuple(v.details for v in anti_cheat_report.violations),
+                        "verdict": tamper_verdict,
+                        "summary": tamper_summary,
+                    }
+                )
 
             return initial_result
 

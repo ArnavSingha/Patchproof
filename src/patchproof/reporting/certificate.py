@@ -32,6 +32,7 @@ class ProofCertificate:
     sandbox_isolated: bool
     created_at_iso: str
     signature: str
+    anti_cheat_passed: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Convert certificate to serializable dictionary."""
@@ -47,6 +48,7 @@ def _compute_digest_payload(
     passed_tests: int,
     introduced_regressions: int,
     sandbox_isolated: bool,
+    anti_cheat_passed: bool,
     created_at_iso: str,
 ) -> bytes:
     """Generate canonical byte string for HMAC signature computation."""
@@ -54,6 +56,7 @@ def _compute_digest_payload(
         f"v={version}|patch={patch_sha256}|commit={base_commit or ''}|"
         f"verdict={verdict}|total={total_tests}|passed={passed_tests}|"
         f"regressions={introduced_regressions}|isolated={sandbox_isolated}|"
+        f"anticheat={anti_cheat_passed}|"
         f"created={created_at_iso}"
     )
     return canonical_str.encode("utf-8")
@@ -81,6 +84,10 @@ def generate_certificate(
     passed_tests = (
         result.patched_result.test_report.passed_count if result.patched_result.test_report else 0
     )
+    anti_cheat_passed = (
+        not result.test_tampering_detected
+        and result.removed_tests_count == 0
+    )
 
     payload = _compute_digest_payload(
         version="1.0",
@@ -91,6 +98,7 @@ def generate_certificate(
         passed_tests=passed_tests,
         introduced_regressions=result.introduced_regressions_count,
         sandbox_isolated=True,
+        anti_cheat_passed=anti_cheat_passed,
         created_at_iso=created_iso,
     )
     sig = _compute_signature(payload, secret)
@@ -104,6 +112,7 @@ def generate_certificate(
         passed_tests=passed_tests,
         introduced_regressions=result.introduced_regressions_count,
         sandbox_isolated=True,
+        anti_cheat_passed=anti_cheat_passed,
         created_at_iso=created_iso,
         signature=sig,
     )
@@ -121,6 +130,7 @@ def verify_certificate(cert: ProofCertificate, secret_key: str | None = None) ->
         passed_tests=cert.passed_tests,
         introduced_regressions=cert.introduced_regressions,
         sandbox_isolated=cert.sandbox_isolated,
+        anti_cheat_passed=cert.anti_cheat_passed,
         created_at_iso=cert.created_at_iso,
     )
     expected_sig = _compute_signature(payload, secret)

@@ -72,6 +72,11 @@ TOOLS_DEFINITIONS: list[dict[str, Any]] = [
                     "description": f"Runner Docker image (default: {DEFAULT_RUNNER_TAG}).",
                     "default": DEFAULT_RUNNER_TAG,
                 },
+                "allow_test_edits": {
+                    "type": "boolean",
+                    "description": "Allow test modifications without triggering anti-cheat alerts.",
+                    "default": False,
+                },
             },
             "required": ["patch"],
         },
@@ -225,11 +230,13 @@ def handle_verify_patch_tool(arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     runner = ComparativeRunner()
+    allow_test_edits = bool(arguments.get("allow_test_edits", False))
     try:
         res = runner.run(
             config,
             patch_content,
             disambiguate_flakes=disambiguate_flakes,
+            allow_test_edits=allow_test_edits,
         )
         return {
             "content": [

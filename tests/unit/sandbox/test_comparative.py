@@ -231,6 +231,40 @@ class TestComparativeRunnerOrchestration:
         assert result.collection_failure_occurred is True
 
     @patch.object(ContainerRunner, "run")
+    def test_comparative_runner_detects_test_tampering(
+        self,
+        mock_runner_run: MagicMock,
+        config: ContainerConfig,
+        repo_dir: pathlib.Path,
+    ) -> None:
+        # Create test file in repo
+        test_file = repo_dir / "tests" / "test_api.py"
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text("def test_one():\n    assert 1 == 1\n", encoding="utf-8")
+
+        stdout_pass = "tests/test_api.py::test_one PASSED [100%]\n==== 1 passed in 0.05s ====\n"
+        mock_runner_run.return_value = ExecutionResult(
+            exit_code=0, stdout=stdout_pass, duration_seconds=0.05
+        )
+
+        # Patch completely deletes the test file
+        tampering_diff = (
+            "--- a/tests/test_api.py\n"
+            "+++ /dev/null\n"
+            "@@ -1,2 +0,0 @@\n"
+            "-def test_one():\n"
+            "-    assert 1 == 1\n"
+        )
+
+        comp_runner = ComparativeRunner()
+        result = comp_runner.run(config, tampering_diff)
+
+        assert result.test_tampering_detected is True
+        assert result.verdict in (PatchVerdict.REJECTED, PatchVerdict.SUSPICIOUS)
+        assert len(result.tampering_details) >= 1
+        assert "Test tampering detected" in result.summary
+
+    @patch.object(ContainerRunner, "run")
     def test_comparative_runner_baseline_infrastructure_failure(
         self,
         mock_runner_run: MagicMock,

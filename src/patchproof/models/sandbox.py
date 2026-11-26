@@ -90,6 +90,7 @@ class RegressionClassification(StrEnum):
     NEW_TEST_SKIPPED = "new_test_skipped"
     REMOVED_TEST = "removed_test"
     FLAKY_REGRESSION = "flaky_regression"
+    TEST_TAMPERING = "test_tampering"
 
 
 class PatchVerdict(StrEnum):
@@ -348,6 +349,9 @@ class ComparativeExecutionResult(BaseModel):
     resolved_defects_count: int = Field(ge=0, default=0)
     pre_existing_failures_count: int = Field(ge=0, default=0)
     suppressed_tests_count: int = Field(ge=0, default=0)
+    removed_tests_count: int = Field(ge=0, default=0)
+    test_tampering_detected: bool = Field(default=False)
+    tampering_details: tuple[str, ...] = Field(default=())
     collection_failure_occurred: bool = Field(default=False)
     summary: str = Field(default="")
 
@@ -359,6 +363,14 @@ class ComparativeExecutionResult(BaseModel):
         ):
             raise SandboxSecurityError(
                 "Verdict cannot be ACCEPTED when introduced regressions exist"
+            )
+        if self.test_tampering_detected and self.verdict == PatchVerdict.ACCEPTED:
+            raise SandboxSecurityError(
+                "Verdict cannot be ACCEPTED when test tampering is detected"
+            )
+        if self.removed_tests_count > 0 and self.verdict == PatchVerdict.ACCEPTED:
+            raise SandboxSecurityError(
+                "Verdict cannot be ACCEPTED when tests were removed or uncollected"
             )
         if self.collection_failure_occurred and self.verdict != PatchVerdict.REJECTED:
             raise SandboxSecurityError("Verdict must be REJECTED when collection failure occurs")

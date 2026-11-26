@@ -190,3 +190,5 @@ class TestRegressionClassifier:
         assert classifications["t_com"] == RegressionClassification.CLEAN_PRESERVATION
         assert classifications["t_old"] == RegressionClassification.REMOVED_TEST
         assert classifications["t_new"] == RegressionClassification.NEW_TEST_PASSING
+        assert comp.removed_tests_count == 1
+        assert comp.verdict == PatchVerdict.SUSPICIOUS

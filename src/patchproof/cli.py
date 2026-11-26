@@ -174,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Re-run introduced regressions 3x in sandbox to filter out non-deterministic flakes",
     )
     verify_parser.add_argument(
+        "--allow-test-edits",
+        action="store_true",
+        help="Allow test file modifications without triggering anti-cheat alerts",
+    )
+    verify_parser.add_argument(
         "--cert",
         default=None,
         metavar="PATH",
@@ -224,6 +229,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=5.0,
         help="Timeout in seconds for individual diagnostic checks (default: 5.0)",
+    )
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Automatically attempt remediation for repairable environment issues",
     )
 
     install_hooks_parser = subparsers.add_parser(
@@ -328,6 +338,9 @@ def format_json_report(result: ComparativeExecutionResult, patch_content: str = 
             "resolved_defects": result.resolved_defects_count,
             "pre_existing_failures": result.pre_existing_failures_count,
             "suppressed_tests": result.suppressed_tests_count,
+            "removed_tests": result.removed_tests_count,
+            "test_tampering_detected": result.test_tampering_detected,
+            "tampering_details": list(result.tampering_details),
             "collection_failure": result.collection_failure_occurred,
         },
         "execution": {
@@ -382,6 +395,8 @@ def format_terminal_report(result: ComparativeExecutionResult, verbose: bool = F
         f"  - Resolved Defects:         {result.resolved_defects_count}",
         f"  - Introduced Regressions:   {result.introduced_regressions_count}",
         f"  - Suppressed Tests:         {result.suppressed_tests_count}",
+        f"  - Removed Tests:            {result.removed_tests_count}",
+        f"  - Test Tampering Alert:     {'DETECTED' if result.test_tampering_detected else 'None'}",
         f"  - Pre-existing Failures:    {result.pre_existing_failures_count}",
         f"  - Collection Failure:       {'YES' if result.collection_failure_occurred else 'No'}",
         "-" * 78,
@@ -411,6 +426,12 @@ def format_terminal_report(result: ComparativeExecutionResult, verbose: bool = F
             b_out = tc.baseline_outcome.value.upper() if tc.baseline_outcome else "NONE"
             p_out = tc.patched_outcome.value.upper() if tc.patched_outcome else "NONE"
             lines.append(f"  {tag:<26} {tc.test_name} ({b_out} -> {p_out})")
+
+    if result.test_tampering_detected and result.tampering_details:
+        lines.append("-" * 78)
+        lines.append("Anti-Cheat Tampering Violations:")
+        for detail in result.tampering_details:
+            lines.append(f"  [TAMPERING] {detail}")
 
     # Display diagnostic output if run failed or had collection/setup errors
     err_text = result.patched_result.stderr.strip()
@@ -446,6 +467,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "doctor":
         doctor = SystemDoctor(timeout_seconds=args.timeout)
+        if getattr(args, "fix", False):
+            sys.stdout.write("patchproof: attempting automatic remediation...\n")
+            fix_actions = doctor.auto_remediate(image_tag=args.image)
+            for act in fix_actions:
+                sys.stdout.write(f"  * {act}\n")
+            sys.stdout.write("\n")
         results = doctor.run_all_checks(image_tag=args.image)
         sys.stdout.write(doctor.format_report(results, json_output=args.json) + "\n")
         return ExitCode.ACCEPTED if all(r.passed for r in results) else ExitCode.REJECTED
@@ -681,6 +708,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config,
             patch_content,
             disambiguate_flakes=args.disambiguate_flakes,
+            allow_test_edits=args.allow_test_edits,
         )
     except SandboxSecurityError as err:
         sys.stderr.write(f"patchproof: security error: {err}\n")

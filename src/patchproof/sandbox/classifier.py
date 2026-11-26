@@ -104,6 +104,7 @@ class RegressionClassifier:
         resolved_defects = 0
         pre_existing_failures = 0
         suppressed_tests = 0
+        removed_tests = 0
 
         for name in all_test_names:
             b_case = base_map.get(name)
@@ -122,6 +123,8 @@ class RegressionClassifier:
                 pre_existing_failures += 1
             elif classification == RegressionClassification.SUPPRESSION_ALERT:
                 suppressed_tests += 1
+            elif classification == RegressionClassification.REMOVED_TEST:
+                removed_tests += 1
 
             comparisons.append(
                 ComparativeTestCase(
@@ -137,6 +140,12 @@ class RegressionClassifier:
         if introduced_regressions > 0:
             verdict = PatchVerdict.REJECTED
             summary = f"Patch rejected: introduced {introduced_regressions} regression(s)"
+        elif removed_tests > 0:
+            verdict = PatchVerdict.SUSPICIOUS
+            summary = (
+                f"Patch flagged suspicious: {removed_tests} previously existing test(s) "
+                "were removed or uncollected"
+            )
         elif suppressed_tests > 0:
             verdict = PatchVerdict.SUSPICIOUS
             summary = (
@@ -168,6 +177,7 @@ class RegressionClassifier:
             resolved_defects_count=resolved_defects,
             pre_existing_failures_count=pre_existing_failures,
             suppressed_tests_count=suppressed_tests,
+            removed_tests_count=removed_tests,
             collection_failure_occurred=False,
             summary=summary,
         )
