@@ -1,0 +1,31 @@
+name: PatchProof PR Verification Gate
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  verify:
+    name: PatchProof Sandbox Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Run PatchProof Verification Action
+        uses: ./
+        with:
+          target: "head"
+          slice: "true"
+          anti_cheat: "true"
+          disambiguate_flakes: "true"
+          comment_pr: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
