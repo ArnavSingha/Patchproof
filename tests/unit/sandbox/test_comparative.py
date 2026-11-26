@@ -302,6 +302,45 @@ class TestComparativeRunnerOrchestration:
         assert result.verdict == PatchVerdict.REJECTED
         assert "timeout" in result.summary.lower()
 
+    @patch.object(ContainerRunner, "run")
+    def test_comparative_runner_disambiguate_flakes(
+        self,
+        mock_runner_run: MagicMock,
+        config: ContainerConfig,
+    ) -> None:
+        stdout_base = "test_calc.py::test_add PASSED [100%]\n==== 1 passed in 0.05s ====\n"
+        stdout_patch = "test_calc.py::test_add FAILED [100%]\n==== 1 failed in 0.05s ====\n"
+        retry1 = ExecutionResult(exit_code=1, stdout="FAILED", duration_seconds=0.01)
+        retry2 = ExecutionResult(exit_code=0, stdout="PASSED", duration_seconds=0.01)
+        retry3 = ExecutionResult(exit_code=1, stdout="FAILED", duration_seconds=0.01)
+
+        mock_runner_run.side_effect = [
+            ExecutionResult(exit_code=0, stdout=stdout_base, duration_seconds=0.05),
+            ExecutionResult(exit_code=1, stdout=stdout_patch, duration_seconds=0.05),
+            retry1,
+            retry2,
+            retry3,
+        ]
+
+        patch_diff = (
+            "--- a/calc.py\n"
+            "+++ b/calc.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n"
+            "-    return a + b\n"
+            "+    return a + b + 0\n"
+        )
+
+        comp_runner = ComparativeRunner()
+        result = comp_runner.run(config, patch_diff, disambiguate_flakes=True)
+
+        assert result.verdict == PatchVerdict.SUSPICIOUS
+        assert result.flaky_tests_count == 1
+        assert result.introduced_regressions_count == 0
+        assert (
+            result.test_comparisons[0].classification == RegressionClassification.FLAKY_REGRESSION
+        )
+
 
 class TestStagingAndSymlinkSecurity:
     """Adversarial tests for symlink traversal prevention and staging directory isolation."""

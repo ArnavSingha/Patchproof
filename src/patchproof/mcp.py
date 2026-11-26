@@ -14,6 +14,7 @@ from typing import Any
 
 from patchproof.core.git_provider import get_head_diff, get_uncommitted_diff
 from patchproof.core.normalizer import parse_patch
+from patchproof.core.slicer import slice_test_suite
 from patchproof.exceptions import (
     GitRepositoryError,
     NoChangesDetectedError,
@@ -23,8 +24,10 @@ from patchproof.models.patch import CanonicalPatch
 from patchproof.models.sandbox import (
     ComparativeExecutionResult,
     ContainerConfig,
+    PatchVerdict,
     ResourceLimits,
 )
+from patchproof.reporting.certificate import generate_certificate
 from patchproof.reporting.diagnostic import generate_ai_feedback
 from patchproof.sandbox.comparative import ComparativeRunner
 from patchproof.sandbox.docker_cli import parse_test_command
@@ -139,6 +142,7 @@ def _format_result_json(result: ComparativeExecutionResult, patch_content: str =
         "ai_feedback": ai_report.to_dict(),
         "counts": {
             "introduced_regressions": result.introduced_regressions_count,
+            "flaky_tests": result.flaky_tests_count,
             "resolved_defects": result.resolved_defects_count,
             "suppressed_tests": result.suppressed_tests_count,
             "pre_existing_failures": result.pre_existing_failures_count,
@@ -163,6 +167,12 @@ def _format_result_json(result: ComparativeExecutionResult, patch_content: str =
             for c in result.test_comparisons
         ],
     }
+    if result.verdict == PatchVerdict.ACCEPTED:
+        try:
+            cert = generate_certificate(result, patch_content=patch_content)
+            report["proof_certificate"] = cert.to_dict()
+        except Exception:
+            pass
     return json.dumps(report, indent=2)
 
 
@@ -173,6 +183,8 @@ def handle_verify_patch_tool(arguments: dict[str, Any]) -> dict[str, Any]:
     image = arguments.get("image", DEFAULT_RUNNER_TAG)
     timeout = float(arguments.get("timeout", 15.0))
     test_cmd_str = arguments.get("test_command")
+    slice_tests = bool(arguments.get("slice", False))
+    disambiguate_flakes = bool(arguments.get("disambiguate_flakes", False))
 
     entrypoint_cmd: tuple[str, ...] = ("pytest", "-q")
     if test_cmd_str:
@@ -183,6 +195,14 @@ def handle_verify_patch_tool(arguments: dict[str, Any]) -> dict[str, Any]:
                 "isError": True,
                 "content": [{"type": "text", "text": f"Invalid test command: {err}"}],
             }
+    elif slice_tests:
+        try:
+            can_p = parse_patch(patch_content)
+            slice_res = slice_test_suite(pathlib.Path(repo).resolve(), can_p)
+            if not slice_res.is_full_suite_fallback and slice_res.selected_test_paths:
+                entrypoint_cmd = ("pytest", "-q", *slice_res.selected_test_paths)
+        except Exception:
+            pass
 
     repo_path = pathlib.Path(repo).resolve()
     if not repo_path.is_dir():
@@ -206,7 +226,11 @@ def handle_verify_patch_tool(arguments: dict[str, Any]) -> dict[str, Any]:
 
     runner = ComparativeRunner()
     try:
-        res = runner.run(config, patch_content)
+        res = runner.run(
+            config,
+            patch_content,
+            disambiguate_flakes=disambiguate_flakes,
+        )
         return {
             "content": [
                 {

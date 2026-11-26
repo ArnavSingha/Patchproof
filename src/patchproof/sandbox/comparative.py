@@ -21,12 +21,15 @@ from patchproof.exceptions import (
 from patchproof.models.patch import CanonicalPatch
 from patchproof.models.sandbox import (
     ComparativeExecutionResult,
+    ComparativeTestCase,
     ContainerConfig,
     ExecutionResult,
     PatchVerdict,
+    RegressionClassification,
     SandboxFailureReason,
 )
 from patchproof.sandbox.classifier import RegressionClassifier
+from patchproof.sandbox.flakiness import disambiguate_flakiness
 from patchproof.sandbox.parser import PytestOutputParser
 from patchproof.sandbox.runner import ContainerRunner
 
@@ -134,6 +137,7 @@ class ComparativeRunner:
         self,
         config: ContainerConfig,
         patch: CanonicalPatch | str,
+        disambiguate_flakes: bool = False,
     ) -> ComparativeExecutionResult:
         """Execute baseline and patched container runs, isolating workspaces and verifying.
 
@@ -308,7 +312,65 @@ class ComparativeRunner:
             patched_result = patched_raw.model_copy(update={"test_report": patch_report})
 
             # Step 6: Reconcile and classify results
-            return self.classifier.classify(baseline_result, patched_result)
+            initial_result = self.classifier.classify(baseline_result, patched_result)
+
+            # Step 7: Flakiness Disambiguation for introduced regressions
+            if disambiguate_flakes and initial_result.introduced_regressions_count > 0:
+                new_comparisons: list[ComparativeTestCase] = []
+                remaining_regressions = 0
+                flaky_count = 0
+
+                for tc in initial_result.test_comparisons:
+                    if tc.classification == RegressionClassification.INTRODUCED_REGRESSION:
+
+                        def _single_runner(test_id: str) -> tuple[bool, float]:
+                            retry_cfg = patched_config.model_copy(
+                                update={"entrypoint_command": ("pytest", "-q", test_id)}
+                            )
+                            try:
+                                r = self.runner.run(retry_cfg)
+                                return (r.exit_code == 0, r.duration_seconds)
+                            except Exception:
+                                return (False, 0.0)
+
+                        flake_rep = disambiguate_flakiness(tc.test_name, _single_runner, attempts=3)
+                        if flake_rep.is_flaky:
+                            flaky_count += 1
+                            new_comparisons.append(
+                                tc.model_copy(
+                                    update={
+                                        "classification": RegressionClassification.FLAKY_REGRESSION,
+                                        "message": f"Flaky: {flake_rep.summary}",
+                                    }
+                                )
+                            )
+                        else:
+                            remaining_regressions += 1
+                            new_comparisons.append(tc)
+                    else:
+                        new_comparisons.append(tc)
+
+                if flaky_count > 0:
+                    new_verdict = (
+                        PatchVerdict.REJECTED
+                        if remaining_regressions > 0
+                        else PatchVerdict.SUSPICIOUS
+                    )
+                    new_summary = (
+                        f"Patch verified with {flaky_count} flaky test(s) detected; "
+                        f"{remaining_regressions} confirmed regression(s)"
+                    )
+                    return initial_result.model_copy(
+                        update={
+                            "test_comparisons": tuple(new_comparisons),
+                            "introduced_regressions_count": remaining_regressions,
+                            "flaky_tests_count": flaky_count,
+                            "verdict": new_verdict,
+                            "summary": new_summary,
+                        }
+                    )
+
+            return initial_result
 
         finally:
             # Guaranteed staging workspaces cleanup

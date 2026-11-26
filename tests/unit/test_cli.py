@@ -650,3 +650,105 @@ class TestCliReporting:
         assert "successfully initialized AI agent configuration" in captured.out
         assert (tmp_path / ".aider.conf.yml").is_file()
         assert (tmp_path / ".cursor" / "mcp.json").is_file()
+
+    @patch("patchproof.cli.ComparativeRunner")
+    def test_main_verify_slice_and_flakes_flags(
+        self,
+        mock_runner_cls: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        # Create minimal repo structure
+        src_dir = tmp_path / "src"
+        src_dir.mkdir(parents=True)
+        (src_dir / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir(parents=True)
+        (tests_dir / "test_mod.py").write_text("from mod import x\n", encoding="utf-8")
+
+        patch_file = tmp_path / "mod.patch"
+        patch_file.write_text(
+            "--- a/src/mod.py\n+++ b/src/mod.py\n@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n"
+        )
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_mock_result(verdict=PatchVerdict.ACCEPTED)
+        mock_runner_cls.return_value = mock_runner
+
+        ret = main(
+            [
+                "verify",
+                str(patch_file),
+                "--slice",
+                "--disambiguate-flakes",
+                "--repo",
+                str(tmp_path),
+            ]
+        )
+        assert ret == ExitCode.ACCEPTED
+        mock_runner.run.assert_called_once()
+        _, kwargs = mock_runner.run.call_args
+        assert kwargs.get("disambiguate_flakes") is True
+        config_passed = mock_runner.run.call_args[0][0]
+        assert any("test_mod.py" in arg for arg in config_passed.entrypoint_command)
+
+    @patch("patchproof.cli.ComparativeRunner")
+    def test_main_verify_with_cert_flag(
+        self,
+        mock_runner_cls: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        patch_file = tmp_path / "valid.patch"
+        patch_file.write_text("--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-a\n+b\n")
+        cert_out = tmp_path / "cert.json"
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_mock_result(verdict=PatchVerdict.ACCEPTED)
+        mock_runner_cls.return_value = mock_runner
+
+        ret = main(["verify", str(patch_file), "--cert", str(cert_out), "--repo", str(tmp_path)])
+        assert ret == ExitCode.ACCEPTED
+        assert cert_out.is_file()
+
+        # Validate with verify-cert command
+        ret_cert = main(["verify-cert", str(cert_out)])
+        assert ret_cert == ExitCode.ACCEPTED
+
+    def test_main_verify_cert_tampered(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        cert_file = tmp_path / "tampered.cert.json"
+        cert_file.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "patch_sha256": "fake",
+                    "base_commit": None,
+                    "verdict": "accepted",
+                    "total_tests": 1,
+                    "passed_tests": 1,
+                    "introduced_regressions": 0,
+                    "sandbox_isolated": True,
+                    "created_at_iso": "2026-11-26T00:00:00Z",
+                    "signature": "invalidsignature",
+                }
+            )
+        )
+        ret = main(["verify-cert", str(cert_file)])
+        assert ret == ExitCode.REJECTED
+
+    @patch("patchproof.cli.AutonomousHealer")
+    def test_main_heal_command(
+        self,
+        mock_healer_cls: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        patch_file = tmp_path / "test.patch"
+        patch_file.write_text("--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-1\n+2\n")
+
+        mock_healer = MagicMock()
+        mock_healer.heal.return_value = MagicMock(success=True, summary="Healed successfully")
+        mock_healer_cls.return_value = mock_healer
+
+        ret = main(["heal", str(patch_file), "--repo", str(tmp_path)])
+        assert ret == ExitCode.ACCEPTED

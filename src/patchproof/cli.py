@@ -23,7 +23,9 @@ from patchproof.core.git_provider import (
     get_uncommitted_diff,
     install_pre_commit_hook,
 )
+from patchproof.core.healer import AutonomousHealer
 from patchproof.core.normalizer import parse_patch
+from patchproof.core.slicer import slice_test_suite
 from patchproof.exceptions import (
     DockerUnavailableError,
     GitRepositoryError,
@@ -40,7 +42,13 @@ from patchproof.models.sandbox import (
     RegressionClassification,
     ResourceLimits,
 )
-from patchproof.reporting.diagnostic import generate_ai_feedback
+from patchproof.reporting.certificate import (
+    ProofCertificate,
+    export_certificate,
+    generate_certificate,
+    verify_certificate,
+)
+from patchproof.reporting.diagnostic import AISelfHealingReport, generate_ai_feedback
 from patchproof.reporting.html_report import generate_html_report
 from patchproof.sandbox.comparative import ComparativeRunner
 from patchproof.sandbox.docker_cli import parse_test_command
@@ -153,6 +161,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Display actionable AI self-healing diagnostic prompt on regression",
     )
+    verify_parser.add_argument(
+        "--slice",
+        "--fast",
+        dest="slice_tests",
+        action="store_true",
+        help="Predictively slice test suite to run only impacted tests",
+    )
+    verify_parser.add_argument(
+        "--disambiguate-flakes",
+        action="store_true",
+        help="Re-run introduced regressions 3x in sandbox to filter out non-deterministic flakes",
+    )
+    verify_parser.add_argument(
+        "--cert",
+        default=None,
+        metavar="PATH",
+        help="Write cryptographic Proof-of-Patch certificate to specified path",
+    )
 
     setup_runner_parser = subparsers.add_parser(
         "setup-runner",
@@ -237,6 +263,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start built-in Model Context Protocol (MCP) server over standard I/O",
     )
 
+    verify_cert_parser = subparsers.add_parser(
+        "verify-cert",
+        help="Validate cryptographic signature and integrity of a Proof-of-Patch certificate",
+    )
+    verify_cert_parser.add_argument(
+        "certificate",
+        help="Path to Proof-of-Patch certificate JSON file",
+    )
+    verify_cert_parser.add_argument(
+        "--secret-key",
+        default=None,
+        help="Custom HMAC secret key used for validation",
+    )
+
+    heal_parser = subparsers.add_parser(
+        "heal",
+        help="Autonomous self-healing loop: verify and repair patch regressions",
+    )
+    heal_parser.add_argument(
+        "patch",
+        nargs="?",
+        default=None,
+        help="Path to patch file, or '-' for stdin. Optional if --git is used",
+    )
+    heal_parser.add_argument(
+        "--git",
+        action="store_true",
+        help="Extract and heal uncommitted working tree changes",
+    )
+    heal_parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=3,
+        help="Maximum self-healing convergence iterations (default: 3)",
+    )
+    heal_parser.add_argument(
+        "--repo",
+        default=".",
+        help="Path to target repository on host (default: current directory)",
+    )
+
     return parser
 
 
@@ -257,6 +324,7 @@ def format_json_report(result: ComparativeExecutionResult, patch_content: str = 
         "ai_feedback": ai_report.to_dict(),
         "metrics": {
             "introduced_regressions": result.introduced_regressions_count,
+            "flaky_tests": result.flaky_tests_count,
             "resolved_defects": result.resolved_defects_count,
             "pre_existing_failures": result.pre_existing_failures_count,
             "suppressed_tests": result.suppressed_tests_count,
@@ -427,6 +495,80 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return ExitCode.ACCEPTED
 
+    if args.command == "verify-cert":
+        cert_path = pathlib.Path(args.certificate)
+        if not cert_path.is_file():
+            sys.stderr.write(f"patchproof: error: certificate file not found: {args.certificate}\n")
+            return ExitCode.CLI_ERROR
+        try:
+            cert_data = json.loads(cert_path.read_text(encoding="utf-8"))
+            cert = ProofCertificate(**cert_data)
+        except Exception as err:
+            sys.stderr.write(f"patchproof: error: invalid certificate format: {err}\n")
+            return ExitCode.CLI_ERROR
+
+        if verify_certificate(cert, secret_key=args.secret_key):
+            sys.stdout.write(
+                "patchproof: Proof-of-Patch certificate verified valid and untampered.\n"
+            )
+            return ExitCode.ACCEPTED
+        else:
+            sys.stderr.write(
+                "patchproof: error: certificate validation failed "
+                "(invalid signature or tampered content)\n"
+            )
+            return ExitCode.REJECTED
+
+    if args.command == "heal":
+        target_repo = pathlib.Path(args.repo).resolve()
+        if not target_repo.is_dir():
+            sys.stderr.write(f"patchproof: error: target directory not found: {args.repo}\n")
+            return ExitCode.CLI_ERROR
+
+        if args.git:
+            try:
+                heal_patch_content = get_uncommitted_diff(target_repo)
+            except NoChangesDetectedError:
+                sys.stdout.write("patchproof: working tree is clean; nothing to heal.\n")
+                return ExitCode.ACCEPTED
+            except GitRepositoryError as err:
+                sys.stderr.write(f"patchproof: error: {err}\n")
+                return ExitCode.CLI_ERROR
+        elif args.patch:
+            p_file = pathlib.Path(args.patch)
+            if not p_file.is_file():
+                sys.stderr.write(f"patchproof: error: patch file not found: {args.patch}\n")
+                return ExitCode.CLI_ERROR
+            heal_patch_content = p_file.read_text(encoding="utf-8")
+        else:
+            sys.stderr.write("patchproof: error: specify patch file or --git for heal\n")
+            return ExitCode.CLI_ERROR
+
+        project_profile = detect_project_stack(target_repo)
+        cfg = ContainerConfig(
+            host_repo_path=str(target_repo),
+            image=project_profile.default_image,
+            entrypoint_command=project_profile.default_test_command,
+        )
+        healer = AutonomousHealer()
+
+        def default_callback(report: AISelfHealingReport) -> str | None:
+            sys.stderr.write(report.prompt_feedback + "\n")
+            return None
+
+        heal_res = healer.heal(
+            cfg,
+            heal_patch_content,
+            repair_agent_fn=default_callback,
+            max_iterations=args.max_iterations,
+        )
+        if heal_res.success:
+            sys.stdout.write(f"patchproof: {heal_res.summary}\n")
+            return ExitCode.ACCEPTED
+        else:
+            sys.stderr.write(f"patchproof: {heal_res.summary}\n")
+            return ExitCode.REJECTED
+
     if args.command != "verify":
         sys.stderr.write(f"patchproof: unknown command: {args.command}\n")
         return ExitCode.CLI_ERROR
@@ -504,6 +646,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         entrypoint_cmd = project_profile.default_test_command
 
+    # 3.8. Predictive Test Slicing
+    if args.slice_tests and args.test_command is None:
+        try:
+            can_p = parse_patch(patch_content)
+            slice_res = slice_test_suite(repo_path, can_p)
+            if not slice_res.is_full_suite_fallback and slice_res.selected_test_paths:
+                entrypoint_cmd = (entrypoint_cmd[0], "-q", *slice_res.selected_test_paths)
+                if not args.json:
+                    count_tests = len(slice_res.selected_test_paths)
+                    sys.stderr.write(
+                        f"patchproof: predictive test slicing isolated {count_tests} "
+                        f"test file(s) in {slice_res.duration_ms:.1f}ms\n"
+                    )
+        except Exception:
+            pass
+
     # 4. Construct configuration
     try:
         config = ContainerConfig(
@@ -519,7 +677,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # 5. Execute comparative verification
     runner = ComparativeRunner()
     try:
-        result = runner.run(config, patch_content)
+        result = runner.run(
+            config,
+            patch_content,
+            disambiguate_flakes=args.disambiguate_flakes,
+        )
     except SandboxSecurityError as err:
         sys.stderr.write(f"patchproof: security error: {err}\n")
         return ExitCode.REJECTED
@@ -548,6 +710,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pass
         ai_diag = generate_ai_feedback(result, patch=canonical_p)
         sys.stderr.write(ai_diag.prompt_feedback + "\n")
+
+    if args.cert:
+        cert_out = pathlib.Path(args.cert)
+        try:
+            cert_obj = generate_certificate(result, patch_content=patch_content)
+            export_certificate(cert_obj, cert_out)
+            if not args.json:
+                sys.stdout.write(f"patchproof: Proof-of-Patch certificate written to {cert_out}\n")
+        except Exception as err:
+            sys.stderr.write(f"patchproof: error: failed to write certificate: {err}\n")
 
     if args.json:
         sys.stdout.write(format_json_report(result, patch_content=patch_content) + "\n")

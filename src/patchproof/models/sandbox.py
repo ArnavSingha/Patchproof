@@ -89,6 +89,7 @@ class RegressionClassification(StrEnum):
     NEW_TEST_FAILING = "new_test_failing"
     NEW_TEST_SKIPPED = "new_test_skipped"
     REMOVED_TEST = "removed_test"
+    FLAKY_REGRESSION = "flaky_regression"
 
 
 class PatchVerdict(StrEnum):
@@ -343,6 +344,7 @@ class ComparativeExecutionResult(BaseModel):
     verdict: PatchVerdict = Field(description="Final empirical evaluation verdict for the patch")
     test_comparisons: tuple[ComparativeTestCase, ...] = Field(default=())
     introduced_regressions_count: int = Field(ge=0, default=0)
+    flaky_tests_count: int = Field(ge=0, default=0)
     resolved_defects_count: int = Field(ge=0, default=0)
     pre_existing_failures_count: int = Field(ge=0, default=0)
     suppressed_tests_count: int = Field(ge=0, default=0)

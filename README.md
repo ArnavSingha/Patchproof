@@ -8,18 +8,20 @@
 
 **Deterministic Code-Patch Verification & Reliability Engine for AI-Assisted Engineering**
 
-PatchProof is an independent verification subsystem designed to evaluate, test, and validate AI-generated code patches (from Aider, Claude Code, Cursor, Copilot, etc.) using syntax validation, isolated container sandboxes, test-integrity analysis, and regression verification.
+PatchProof is an independent verification subsystem designed to evaluate, test, and validate AI-generated code patches (from Aider, Claude Code, Cursor, Copilot, Windsurf, etc.) using isolated zero-network container sandboxes, AST dependency analysis, Spectrum-Based Fault Localization, flakiness disambiguation, and cryptographic proof-of-patch attestation.
 
 ---
 
 ## Key Features
 
-- **Deterministic Patch Normalizer:** Parses unified diffs and SEARCH/REPLACE blocks into immutable, canonical models (`CanonicalPatch`, `FileDelta`, `PatchHunk`), normalizing line endings and hunk counts.
-- **AST Scope & Syntax Validator:** Validates Python AST modifications before execution. Detects broken syntax, structural anomalies, and calculates affected function/class boundaries.
-- **Isolated Sandbox Execution:** Executes verification and test suites inside hardened, ephemeral Docker containers with disabled networking (`--network none`), resource caps, and sanitized host environments.
-- **Comparative Regression Classifier:** Runs tests against base and patched states to classify regressions (broken existing tests vs. newly introduced test additions).
-- **Model Context Protocol (MCP) Server:** Native MCP integration allowing AI agents (Cursor, Claude, Antigravity) to call `verify_patch` directly during code generation.
-- **Audit Reporting:** Generates machine-readable JSON summaries and clean HTML visual reports.
+- **Isolated Container Sandboxing:** Executes tests in hardened, zero-network Docker containers (`--network none`, `--read-only`, unprivileged UID `10001:10001`, dropped capabilities) with ephemeral staging workspaces and symlink traversal defense.
+- **Predictive Test Slicing (`--slice`):** Analyzes patch AST import graphs to isolate and run only impacted tests in **< 5ms** instead of waiting for the full test suite.
+- **Spectrum-Based Fault Localization (SBFL):** Correlates failing test tracebacks directly with patch hunks, calculating an **Ochiai suspicion score** and pinpointing the exact lines of code that triggered regressions.
+- **Flakiness Disambiguation (`--disambiguate-flakes`):** Re-runs failing tests inside the sandbox across 3 retry attempts to disambiguate non-deterministic timing/race flakes from true deterministic regressions.
+- **Autonomous Self-Healing Loop (`patchproof heal`):** Orchestrates multi-turn convergence loops using localized fault diagnostics to automatically repair regressions until the patch is clean.
+- **Cryptographic Proof-of-Patch Attestation (`--cert`):** Generates tamper-proof HMAC-SHA256 signed verification certificates (`patchproof.cert.json`) for CI/CD and pull request merge gating.
+- **One-Command Agent Onboarding (`patchproof init-agent`):** Automatically configures `.aider.conf.yml`, `.cursor/mcp.json`, `.cursorrules`, and `CLAUDE.md`.
+- **Model Context Protocol (MCP) Server:** Built-in JSON-RPC stdio MCP server exposing verification, diagnostics, and certificates directly to AI coding agents.
 
 ---
 
@@ -39,20 +41,69 @@ cd patchproof
 pip install -e ".[dev]"
 ```
 
-### CLI Usage
+---
+
+## CLI Usage
+
+### 1. Verify Patches in Isolated Sandbox
 
 ```bash
-# Verify a patch against a repository
-patchproof verify --patch changes.patch --repo ./my-project
+# Verify a patch file with predictive slicing and flakiness disambiguation
+patchproof verify changes.patch --slice --disambiguate-flakes
 
-# Run verification with Docker sandboxing enabled
-patchproof verify --patch changes.patch --repo ./my-project --sandbox
+# Verify uncommitted Git changes in current repository
+patchproof verify --git --slice
 
-# Output results as structured JSON
-patchproof verify --patch changes.patch --repo ./my-project --json
+# Verify changes introduced by the latest HEAD commit
+patchproof verify --head
 
-# Generate an HTML audit report
-patchproof verify --patch changes.patch --repo ./my-project --html-report report.html
+# Print high-density AI diagnostic prompt if regressions occur
+patchproof verify --git --ai-feedback
+
+# Generate a visual HTML report and a cryptographic Proof-of-Patch certificate
+patchproof verify changes.patch --html report.html --cert cert.json
+```
+
+### 2. Autonomous Patch Self-Healing
+
+```bash
+# Automatically verify and repair uncommitted Git regressions
+patchproof heal --git --max-iterations 3
+
+# Heal a patch file
+patchproof heal changes.patch
+```
+
+### 3. Validate Cryptographic Proof Certificates
+
+```bash
+# Validate that a Proof-of-Patch certificate is authentic and untampered
+patchproof verify-cert cert.json
+```
+
+### 4. Setup AI Agent Presets
+
+```bash
+# Initialize configuration for all agents (Aider, Cursor, Claude Code)
+patchproof init-agent all
+
+# Or initialize a specific agent
+patchproof init-agent cursor
+patchproof init-agent aider
+patchproof init-agent claude
+```
+
+### 5. Diagnostics & Runner Setup
+
+```bash
+# Check host Docker daemon, Linux container mode, and environment readiness
+patchproof doctor
+
+# Build standard local Docker runner image
+patchproof setup-runner
+
+# Install Git pre-commit verification hook
+patchproof install-hooks
 ```
 
 ---
@@ -72,23 +123,25 @@ PatchProof includes a built-in MCP server for AI coding assistants. Configure yo
 }
 ```
 
+Or run `patchproof init-agent cursor` to automatically configure your `.cursor/mcp.json`.
+
 ---
 
 ## Development & Testing
 
 ```bash
-# Run unit and integration tests
+# Run unit and integration tests (355+ tests)
 pytest
 
 # Code formatting and linting
 ruff check .
 
-# Static type verification
-mypy src/ tests/
+# Strict static type verification
+mypy --strict src/ tests/
 ```
 
 ---
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the `LICENSE` file for details.
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.

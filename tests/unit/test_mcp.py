@@ -119,6 +119,7 @@ class TestMCPTools:
         data = json.loads(res["content"][0]["text"])
         assert data["verdict"] == "accepted"
         assert "ai_feedback" in data
+        assert "proof_certificate" in data
 
     @patch("patchproof.mcp.get_uncommitted_diff")
     @patch("patchproof.mcp.ComparativeRunner")
@@ -139,6 +140,7 @@ class TestMCPTools:
         data = json.loads(res["content"][0]["text"])
         assert data["verdict"] == "accepted"
         assert "ai_feedback" in data
+        assert "proof_certificate" in data
 
     @patch("patchproof.mcp.SystemDoctor")
     def test_doctor_tool(self, mock_doctor_cls: MagicMock) -> None:
