@@ -13,6 +13,7 @@ import sys
 from typing import Any
 
 from patchproof.core.git_provider import get_head_diff, get_uncommitted_diff
+from patchproof.core.healer import AutonomousHealer
 from patchproof.core.normalizer import parse_patch
 from patchproof.core.slicer import slice_test_suite
 from patchproof.exceptions import (
@@ -28,7 +29,7 @@ from patchproof.models.sandbox import (
     ResourceLimits,
 )
 from patchproof.reporting.certificate import generate_certificate
-from patchproof.reporting.diagnostic import generate_ai_feedback
+from patchproof.reporting.diagnostic import AISelfHealingReport, generate_ai_feedback
 from patchproof.sandbox.comparative import ComparativeRunner
 from patchproof.sandbox.docker_cli import parse_test_command
 from patchproof.sandbox.doctor import SystemDoctor
@@ -125,6 +126,41 @@ TOOLS_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "patchproof_heal",
+        "description": (
+            "Run autonomous verification and self-healing convergence loop on a patch or Git repo. "
+            "Returns iterative diagnosis, pinpoint fault localization, and convergence status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "patch": {
+                    "type": "string",
+                    "description": "Unified diff or patch to heal (default: uncommitted changes).",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "Path to target repository on host (default: .).",
+                    "default": ".",
+                },
+                "test_command": {
+                    "type": "string",
+                    "description": "Custom test execution command (e.g. 'pytest -q').",
+                },
+                "max_iterations": {
+                    "type": "integer",
+                    "description": "Maximum healing convergence turns (default: 3).",
+                    "default": 3,
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Execution timeout per run in seconds (default: 15.0).",
+                    "default": 15.0,
+                },
+            },
         },
     },
 ]
@@ -317,6 +353,69 @@ def handle_doctor_tool(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle_heal_tool(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Execute patchproof_heal tool."""
+    repo = arguments.get("repo", ".")
+    repo_path = pathlib.Path(repo).resolve()
+    patch_content = arguments.get("patch", "")
+    max_iter = int(arguments.get("max_iterations", 3))
+    timeout = float(arguments.get("timeout", 15.0))
+    test_cmd_str = arguments.get("test_command")
+
+    if not patch_content:
+        try:
+            patch_content = get_uncommitted_diff(repo_path)
+        except Exception as err:
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": f"Failed reading changes: {err}"}],
+            }
+
+    entrypoint_cmd: tuple[str, ...] = ("pytest", "-q")
+    if test_cmd_str:
+        try:
+            entrypoint_cmd = parse_test_command(test_cmd_str)
+        except SandboxSecurityError as err:
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": f"Invalid test command: {err}"}],
+            }
+
+    config = ContainerConfig(
+        host_repo_path=str(repo_path),
+        resources=ResourceLimits(timeout_seconds=timeout),
+        entrypoint_command=entrypoint_cmd,
+    )
+
+    healer = AutonomousHealer()
+
+    def default_repair_cb(report: AISelfHealingReport) -> str | None:
+        return None
+
+    heal_res = healer.heal(
+        config,
+        patch_content,
+        repair_agent_fn=default_repair_cb,
+        max_iterations=max_iter,
+    )
+
+    last_verdict = "unknown"
+    if heal_res.last_result and hasattr(heal_res.last_result, "verdict"):
+        v = heal_res.last_result.verdict
+        last_verdict = str(getattr(v, "value", v))
+
+    output = {
+        "success": heal_res.success,
+        "iterations": heal_res.iterations,
+        "summary": heal_res.summary,
+        "final_patch": heal_res.final_patch,
+        "last_verdict": last_verdict,
+    }
+    return {
+        "content": [{"type": "text", "text": json.dumps(output, indent=2)}],
+    }
+
+
 class MCPServer:
     """Zero-dependency JSON-RPC 2.0 Model Context Protocol (MCP) server."""
 
@@ -325,6 +424,7 @@ class MCPServer:
             "patchproof_verify_patch": handle_verify_patch_tool,
             "patchproof_verify_git": handle_verify_git_tool,
             "patchproof_doctor": handle_doctor_tool,
+            "patchproof_heal": handle_heal_tool,
         }
 
     def process_request(self, req: dict[str, Any]) -> dict[str, Any] | None:

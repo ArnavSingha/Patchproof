@@ -9,6 +9,7 @@ import shutil
 import tempfile
 
 from patchproof.core.applier import apply_patch
+from patchproof.core.git_provider import export_git_tree, is_git_repository
 from patchproof.core.normalizer import parse_patch
 from patchproof.core.search_replace import SEARCH_START, parse_search_replace
 from patchproof.exceptions import (
@@ -190,39 +191,61 @@ class ComparativeRunner:
         patched_staging = pathlib.Path(tempfile.mkdtemp(prefix="patchproof-staging-patch-"))
 
         try:
-            # Copy source tree safely with symlink traversal audit for baseline
-            try:
-                safe_copy_repository(config.host_repo_path, baseline_staging)
-            except SandboxSecurityError as err:
-                dummy_res = ExecutionResult(
-                    exit_code=1,
-                    stderr=f"Security violation during staging: {err}",
-                    duration_seconds=0.0,
-                    failure_reason=SandboxFailureReason.SETUP_ERROR,
-                )
-                return ComparativeExecutionResult(
-                    baseline_result=dummy_res,
-                    patched_result=dummy_res,
-                    verdict=PatchVerdict.REJECTED,
-                    summary=f"Security violation during staging: {err}",
-                )
+            # Step 2: Populate staging repositories
+            # Attempt pristine Git tree export first to guarantee clean baseline
+            git_isolated = False
+            if is_git_repository(config.host_repo_path):
+                try:
+                    base_ok = export_git_tree(config.host_repo_path, "HEAD", baseline_staging)
+                    patch_ok = export_git_tree(config.host_repo_path, "HEAD", patched_staging)
+                    git_isolated = base_ok and patch_ok
+                except SandboxSecurityError as err:
+                    dummy_res = ExecutionResult(
+                        exit_code=1,
+                        stderr=f"Security violation during staging: {err}",
+                        duration_seconds=0.0,
+                        failure_reason=SandboxFailureReason.SETUP_ERROR,
+                    )
+                    return ComparativeExecutionResult(
+                        baseline_result=dummy_res,
+                        patched_result=dummy_res,
+                        verdict=PatchVerdict.REJECTED,
+                        summary=f"Security violation during staging: {err}",
+                    )
 
-            # Copy source tree safely for patched
-            try:
-                safe_copy_repository(config.host_repo_path, patched_staging)
-            except SandboxSecurityError as err:
-                dummy_res = ExecutionResult(
-                    exit_code=1,
-                    stderr=f"Security violation during staging: {err}",
-                    duration_seconds=0.0,
-                    failure_reason=SandboxFailureReason.SETUP_ERROR,
-                )
-                return ComparativeExecutionResult(
-                    baseline_result=dummy_res,
-                    patched_result=dummy_res,
-                    verdict=PatchVerdict.REJECTED,
-                    summary=f"Security violation during staging: {err}",
-                )
+            if not git_isolated:
+                # Fallback to direct safe_copy_repository for non-git or bare environments
+                try:
+                    safe_copy_repository(config.host_repo_path, baseline_staging)
+                except SandboxSecurityError as err:
+                    dummy_res = ExecutionResult(
+                        exit_code=1,
+                        stderr=f"Security violation during staging: {err}",
+                        duration_seconds=0.0,
+                        failure_reason=SandboxFailureReason.SETUP_ERROR,
+                    )
+                    return ComparativeExecutionResult(
+                        baseline_result=dummy_res,
+                        patched_result=dummy_res,
+                        verdict=PatchVerdict.REJECTED,
+                        summary=f"Security violation during staging: {err}",
+                    )
+
+                try:
+                    safe_copy_repository(config.host_repo_path, patched_staging)
+                except SandboxSecurityError as err:
+                    dummy_res = ExecutionResult(
+                        exit_code=1,
+                        stderr=f"Security violation during staging: {err}",
+                        duration_seconds=0.0,
+                        failure_reason=SandboxFailureReason.SETUP_ERROR,
+                    )
+                    return ComparativeExecutionResult(
+                        baseline_result=dummy_res,
+                        patched_result=dummy_res,
+                        verdict=PatchVerdict.REJECTED,
+                        summary=f"Security violation during staging: {err}",
+                    )
 
             # Step 3: Execute baseline test container
             baseline_config = config.model_copy(update={"host_repo_path": str(baseline_staging)})

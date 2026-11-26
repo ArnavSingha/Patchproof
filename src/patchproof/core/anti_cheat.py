@@ -41,6 +41,25 @@ def is_test_file(path: str | pathlib.Path) -> bool:
     return False
 
 
+CONFIG_FILES = {"pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"}
+SUSPICIOUS_CONFIG_PATTERNS = (
+    "--ignore",
+    "--deselect",
+    "-k \"not",
+    "-k 'not",
+    "-k not",
+    "-m \"not",
+    "-m 'not",
+    "-m not",
+)
+
+
+def is_config_file(path: str | pathlib.Path) -> bool:
+    """Determine whether path represents a test runner configuration file."""
+    p = pathlib.PurePosixPath(str(path).replace("\\", "/"))
+    return p.name.lower() in CONFIG_FILES
+
+
 class TamperingViolationType(StrEnum):
     """Categorization of test tampering violations."""
 
@@ -49,6 +68,7 @@ class TamperingViolationType(StrEnum):
     ASSERTION_COUNT_REDUCED = "assertion_count_reduced"
     TEST_SUPPRESSION_INJECTED = "test_suppression_injected"
     TEST_SYNTAX_ERROR = "test_syntax_error"
+    CONFIG_TAMPERING = "config_tampering"
 
 
 class TamperingViolation(BaseModel):
@@ -225,6 +245,26 @@ def audit_patch_integrity(
     total_tests_suppressed = 0
 
     for delta in patch.file_deltas:
+        if is_config_file(delta.path):
+            for hunk in delta.hunks:
+                for line in hunk.lines:
+                    if line.startswith("+"):
+                        line_lower = line[1:].strip().lower()
+                        for pattern in SUSPICIOUS_CONFIG_PATTERNS:
+                            if pattern in line_lower:
+                                all_violations.append(
+                                    TamperingViolation(
+                                        violation_type=TamperingViolationType.CONFIG_TAMPERING,
+                                        file_path=delta.path,
+                                        details=(
+                                            f"Configuration tampering in '{delta.path}': "
+                                            f"test suppression flag '{pattern}' introduced: "
+                                            f"'{line.strip()}'"
+                                        ),
+                                    )
+                                )
+            continue
+
         if not is_test_file(delta.path):
             continue
 
@@ -297,6 +337,7 @@ def audit_patch_integrity(
                 TamperingViolationType.TEST_FUNCTION_DELETED,
                 TamperingViolationType.TEST_SUPPRESSION_INJECTED,
                 TamperingViolationType.ASSERTION_COUNT_REDUCED,
+                TamperingViolationType.CONFIG_TAMPERING,
             )
         ]
 

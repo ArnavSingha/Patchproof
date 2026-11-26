@@ -67,6 +67,8 @@ class TestGetUncommittedDiff:
             subprocess.CompletedProcess(args=[], returncode=0, stdout="true\n", stderr=""),
             # 2. git diff HEAD
             subprocess.CompletedProcess(args=[], returncode=0, stdout=sample_diff, stderr=""),
+            # 3. git ls-files for untracked files
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
         ]
 
         diff = get_uncommitted_diff(tmp_path)
@@ -80,6 +82,8 @@ class TestGetUncommittedDiff:
             subprocess.CompletedProcess(args=[], returncode=0, stdout="true\n", stderr=""),
             # Empty diff
             subprocess.CompletedProcess(args=[], returncode=0, stdout="  \n", stderr=""),
+            # git ls-files for untracked files
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
         ]
 
         with pytest.raises(NoChangesDetectedError, match="No uncommitted changes detected"):
