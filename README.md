@@ -2,38 +2,87 @@
 
 **Deterministic Code-Patch Verification & Reliability Engine for AI-Assisted Engineering**
 
-PatchProof is an independent verification subsystem designed to evaluate, test, and validate AI-generated code patches using actual execution evidence, isolated sandboxes, test-integrity analysis, and regression verification.
+PatchProof is an independent verification subsystem designed to evaluate, test, and validate AI-generated code patches (from Aider, Claude Code, Cursor, Copilot, etc.) using syntax validation, isolated container sandboxes, test-integrity analysis, and regression verification.
 
 ---
 
-## Milestone M1: Core Patch Normalizer
+## Key Features
 
-Milestone M1 establishes the fundamental data structures and the canonical patch normalizer:
-
-- **Immutable Domain Models:** `CanonicalPatch`, `FileDelta`, `PatchHunk`, `PatchType`, `ChangeType`.
-- **Deterministic Normalizer:** `parse_patch(raw_diff: str) -> CanonicalPatch` parses unified diffs, normalizes line endings (`CRLF` -> `LF`), validates hunk line counts, and tracks single-file, multi-file, additions, and deletions.
-- **Fail-Fast Validation:** Detects malformed diffs, missing headers, or corrupt line counts via `InvalidPatchFormatError`.
+- **Deterministic Patch Normalizer:** Parses unified diffs and SEARCH/REPLACE blocks into immutable, canonical models (`CanonicalPatch`, `FileDelta`, `PatchHunk`), normalizing line endings and hunk counts.
+- **AST Scope & Syntax Validator:** Validates Python AST modifications before execution. Detects broken syntax, structural anomalies, and calculates affected function/class boundaries.
+- **Isolated Sandbox Execution:** Executes verification and test suites inside hardened, ephemeral Docker containers with disabled networking (`--network none`), resource caps, and sanitized host environments.
+- **Comparative Regression Classifier:** Runs tests against base and patched states to classify regressions (broken existing tests vs. newly introduced test additions).
+- **Model Context Protocol (MCP) Server:** Native MCP integration allowing AI agents (Cursor, Claude, Antigravity) to call `verify_patch` directly during code generation.
+- **Audit Reporting:** Generates machine-readable JSON summaries and clean HTML visual reports.
 
 ---
 
-## Installation & Development
+## Quickstart
+
+### Installation
 
 ```bash
-# Clone and setup
+pip install patchproof
+```
+
+Or install in development mode from source:
+
+```bash
+git clone https://github.com/ArnavSingha/Patchproof.git
+cd patchproof
 pip install -e ".[dev]"
+```
 
-# Run tests
-pytest
+### CLI Usage
 
-# Static analysis
-ruff check .
-mypy src/patchproof tests/
+```bash
+# Verify a patch against a repository
+patchproof verify --patch changes.patch --repo ./my-project
+
+# Run verification with Docker sandboxing enabled
+patchproof verify --patch changes.patch --repo ./my-project --sandbox
+
+# Output results as structured JSON
+patchproof verify --patch changes.patch --repo ./my-project --json
+
+# Generate an HTML audit report
+patchproof verify --patch changes.patch --repo ./my-project --html-report report.html
 ```
 
 ---
 
-## Architecture Blueprint
+## MCP Server Integration
 
-Detailed architectural specifications and design records are located in:
-- `docs/ARCHITECTURE_REPORT.md` (Initial comprehensive upstream investigation)
-- `docs/PATCHPROOF_ARCHITECTURE_REFINEMENT.md` (Refined threat model and verification lifecycle)
+PatchProof includes a built-in MCP server for AI coding assistants. Configure your MCP client:
+
+```json
+{
+  "mcpServers": {
+    "patchproof": {
+      "command": "patchproof",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+---
+
+## Development & Testing
+
+```bash
+# Run unit and integration tests
+pytest
+
+# Code formatting and linting
+ruff check .
+
+# Static type verification
+mypy src/ tests/
+```
+
+---
+
+## License
+
+This project is licensed under the Apache License 2.0. See the `LICENSE` file for details.

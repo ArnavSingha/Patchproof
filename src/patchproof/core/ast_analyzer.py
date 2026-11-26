@@ -20,49 +20,51 @@ class _EntityVisitor(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.entities: list[ASTEntity] = []
-        self.current_class: str | None = None
+        self.class_stack: list[str] = []
+        self.function_depth: int = 0
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         end_line = getattr(node, "end_lineno", node.lineno)
+        current_class = self.class_stack[-1] if self.class_stack else None
         entity = ASTEntity(
             name=node.name,
             entity_type=EntityType.CLASS,
-            parent_class=self.current_class,
+            parent_class=current_class,
             start_line=node.lineno,
             end_line=end_line,
         )
         self.entities.append(entity)
 
-        prev_class = self.current_class
-        self.current_class = node.name
+        self.class_stack.append(node.name)
         self.generic_visit(node)
-        self.current_class = prev_class
+        self.class_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        end_line = getattr(node, "end_lineno", node.lineno)
-        ent_type = EntityType.METHOD if self.current_class else EntityType.FUNCTION
-        entity = ASTEntity(
-            name=node.name,
-            entity_type=ent_type,
-            parent_class=self.current_class,
-            start_line=node.lineno,
-            end_line=end_line,
-        )
-        self.entities.append(entity)
-        self.generic_visit(node)
+        self._record_func(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._record_func(node)
+
+    def _record_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         end_line = getattr(node, "end_lineno", node.lineno)
-        ent_type = EntityType.METHOD if self.current_class else EntityType.FUNCTION
+        if self.class_stack and self.function_depth == 0:
+            ent_type = EntityType.METHOD
+            parent_class = self.class_stack[-1]
+        else:
+            ent_type = EntityType.FUNCTION
+            parent_class = None
+
         entity = ASTEntity(
             name=node.name,
             entity_type=ent_type,
-            parent_class=self.current_class,
+            parent_class=parent_class,
             start_line=node.lineno,
             end_line=end_line,
         )
         self.entities.append(entity)
+        self.function_depth += 1
         self.generic_visit(node)
+        self.function_depth -= 1
 
 
 def _extract_imports(tree: ast.AST) -> tuple[str, ...]:
@@ -73,8 +75,11 @@ def _extract_imports(tree: ast.AST) -> tuple[str, ...]:
             for alias in node.names:
                 imported_modules.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
+            dots = "." * (node.level or 0)
             if node.module:
-                imported_modules.add(node.module)
+                imported_modules.add(f"{dots}{node.module}")
+            elif dots:
+                imported_modules.add(dots)
     return tuple(sorted(imported_modules))
 
 
@@ -171,12 +176,23 @@ def analyze_python_source(
     )
 
 
-def extract_delta_line_ranges(delta: FileDelta) -> list[tuple[int, int]]:
-    """Calculate the target line ranges affected by a FileDelta."""
+def extract_delta_line_ranges(delta: FileDelta, pre_patch: bool = False) -> list[tuple[int, int]]:
+    """Calculate the line ranges affected by a FileDelta.
+
+    Args:
+        delta: File delta containing hunks.
+        pre_patch: If True, extract line coordinates from the pre-patch file
+            (old_start, old_lines). Otherwise, extract post-patch coordinates
+            (new_start, new_lines).
+    """
     ranges: list[tuple[int, int]] = []
     for hunk in delta.hunks:
-        start = hunk.new_start if hunk.new_start > 0 else 1
-        length = hunk.new_lines if hunk.new_lines > 0 else 1
+        if pre_patch:
+            start = hunk.old_start if hunk.old_start > 0 else 1
+            length = hunk.old_lines if hunk.old_lines > 0 else 1
+        else:
+            start = hunk.new_start if hunk.new_start > 0 else 1
+            length = hunk.new_lines if hunk.new_lines > 0 else 1
         ranges.append((start, start + length - 1))
     return ranges
 
@@ -184,12 +200,14 @@ def extract_delta_line_ranges(delta: FileDelta) -> list[tuple[int, int]]:
 def analyze_patch_ast(
     patch: CanonicalPatch,
     source_resolver: Callable[[str], str | None] | None = None,
+    pre_patch: bool = False,
 ) -> ASTAnalysisReport:
     """Analyze all Python files in a CanonicalPatch against available source code.
 
     Args:
         patch: Canonical patch to inspect.
         source_resolver: Optional callable `(path: str) -> source_code | None`.
+        pre_patch: If True, interpret source code and hunk line coordinates in pre-patch state.
 
     Returns:
         ASTAnalysisReport: Consolidated AST report across all patch files.
@@ -200,18 +218,17 @@ def analyze_patch_ast(
         if not delta.path.endswith(".py"):
             continue
 
-        ranges = extract_delta_line_ranges(delta)
+        ranges = extract_delta_line_ranges(delta, pre_patch=pre_patch)
         source = source_resolver(delta.path) if source_resolver else None
 
         # Extract calls introduced in added hunk lines (dedented for valid AST parsing)
-        added_snippet = textwrap.dedent(
-            "\n".join(
-                line[1:]
-                for hunk in delta.hunks
-                for line in hunk.lines
-                if line.startswith("+") and not line.startswith("+++")
-            )
-        )
+        added_lines = [
+            line[1:]
+            for hunk in delta.hunks
+            for line in hunk.lines
+            if line.startswith("+") and not line.startswith("+++")
+        ]
+        added_snippet = textwrap.dedent("\n".join(added_lines))
         patch_introduced_calls = _extract_calls_from_text(added_snippet)
 
         if source is not None:

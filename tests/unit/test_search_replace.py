@@ -225,3 +225,20 @@ src/file.py
 """
     with pytest.raises(InvalidPatchFormatError, match="Unexpected delimiter"):
         parse_search_replace(bad_diff)
+
+
+def test_extensionless_root_files():
+    """Verify root extensionless files like Makefile and Dockerfile parse correctly."""
+    diff = """\
+Makefile
+<<<<<<< SEARCH
+all: test
+=======
+all: lint test
+>>>>>>> REPLACE
+"""
+    patch = parse_search_replace(diff)
+    assert patch.total_files == 1
+    delta = patch.file_deltas[0]
+    assert delta.path == "Makefile"
+    assert len(delta.hunks) == 1

@@ -118,7 +118,11 @@ class _SearchReplaceParser:
         if line.startswith("<") or line.startswith("=") or line.startswith(">"):
             return False
         cleaned = _clean_filename(line)
-        return bool(re.search(r"\.[A-Za-z0-9_-]+$", cleaned) or "/" in cleaned or "\\" in cleaned)
+        if not cleaned:
+            return False
+        if re.search(r"\.[A-Za-z0-9_-]+$", cleaned) or "/" in cleaned or "\\" in cleaned:
+            return True
+        return bool(re.match(r"^[A-Za-z0-9_.-]+$", cleaned))
 
     def _peek_next_non_empty(self) -> str | None:
         lookahead = self.idx + 1

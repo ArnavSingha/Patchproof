@@ -337,3 +337,34 @@ Binary files a/logo.png and b/logo.png differ
     assert delta.is_binary is True
     assert delta.change_type == ChangeType.MODIFY
 
+
+def test_index_header_diff():
+    """Verify parsing diffs containing SVN/CVS Index: headers."""
+    diff = """\
+Index: src/main.py
+===================================================================
+--- src/main.py	(revision 123)
++++ src/main.py	(working copy)
+@@ -1,2 +1,2 @@
+-old_val = 1
++old_val = 2
+ unchanged = True
+"""
+    patch = parse_patch(diff)
+    assert patch.total_files == 1
+    assert patch.file_deltas[0].path == "src/main.py"
+    assert len(patch.file_deltas[0].hunks) == 1
+
+
+def test_folder_named_a_not_double_stripped():
+    """Verify single-pass prefix strip prevents path /a/b/c becoming b/c."""
+    diff = """\
+diff --git a/a/foo.py b/a/foo.py
+--- a/a/foo.py
++++ b/a/foo.py
+@@ -1,1 +1,1 @@
+-x = 1
++x = 2
+"""
+    patch = parse_patch(diff)
+    assert patch.file_deltas[0].path == "a/foo.py"

@@ -39,3 +39,19 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Graphify artifacts
+graphify-out/
+.graphify*
+
+# External & Local agent configuration (kept private)
+.agents/
+AGENTS.md
+scripts/query_skills.py
+
+# Secrets & Environment
+.env
+.env.*
+*.secret
+*.key
+*.token

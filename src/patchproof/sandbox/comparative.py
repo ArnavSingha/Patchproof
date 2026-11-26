@@ -1,0 +1,316 @@
+"""Comparative execution engine orchestrating dual-run baseline-versus-patched evaluations."""
+
+from __future__ import annotations
+
+import logging
+import os
+import pathlib
+import shutil
+import tempfile
+
+from patchproof.core.applier import apply_patch
+from patchproof.core.normalizer import parse_patch
+from patchproof.core.search_replace import SEARCH_START, parse_search_replace
+from patchproof.exceptions import (
+    DockerUnavailableError,
+    InvalidPatchFormatError,
+    PatchApplicationError,
+    SandboxSecurityError,
+    UnsupportedDockerEngineError,
+)
+from patchproof.models.patch import CanonicalPatch
+from patchproof.models.sandbox import (
+    ComparativeExecutionResult,
+    ContainerConfig,
+    ExecutionResult,
+    PatchVerdict,
+    SandboxFailureReason,
+)
+from patchproof.sandbox.classifier import RegressionClassifier
+from patchproof.sandbox.parser import PytestOutputParser
+from patchproof.sandbox.runner import ContainerRunner
+
+logger = logging.getLogger(__name__)
+
+STAGING_IGNORE_PATTERNS = (
+    ".git",
+    ".venv",
+    "env",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+)
+
+BASELINE_INFRASTRUCTURE_FAILURES = (
+    SandboxFailureReason.TIMEOUT,
+    SandboxFailureReason.OOM_KILLED,
+    SandboxFailureReason.DOCKER_UNAVAILABLE,
+    SandboxFailureReason.UNSUPPORTED_ENGINE,
+    SandboxFailureReason.SETUP_ERROR,
+)
+
+
+def safe_copy_repository(
+    src_repo_path: str | pathlib.Path,
+    dst_staging_path: str | pathlib.Path,
+    ignore_patterns: tuple[str, ...] = STAGING_IGNORE_PATTERNS,
+) -> None:
+    """Safely copy repository source to an ephemeral staging directory.
+
+    Rejects and fails closed on any symlinks pointing outside the repository root.
+    Never copies git directories, virtual environments, or build caches.
+
+    Raises:
+        SandboxSecurityError: If any symlink points outside the repository root.
+    """
+    src_root = pathlib.Path(src_repo_path).resolve()
+    dst_root = pathlib.Path(dst_staging_path).resolve()
+
+    # Pre-scan for malicious symlinks escaping repository root
+    for root_dir, dirs, files in os.walk(src_root, followlinks=False):
+        current_path = pathlib.Path(root_dir)
+        # Filter ignored directory names in-place
+        dirs[:] = [d for d in dirs if d not in ignore_patterns]
+
+        for item_name in dirs + files:
+            item_path = current_path / item_name
+            if item_path.is_symlink():
+                resolved_target = item_path.resolve()
+                try:
+                    resolved_target.relative_to(src_root)
+                except ValueError as err:
+                    raise SandboxSecurityError(
+                        f"Symlink traversal detected: '{item_path}' points outside "
+                        f"repository root to '{resolved_target}'"
+                    ) from err
+
+    shutil.copytree(
+        src_root,
+        dst_root,
+        ignore=shutil.ignore_patterns(*ignore_patterns),
+        dirs_exist_ok=True,
+    )
+
+
+def safe_cleanup_staging(staging_dir: pathlib.Path) -> None:
+    """Safely remove ephemeral staging directory with boundary verification."""
+    try:
+        resolved = staging_dir.resolve()
+        temp_root = pathlib.Path(tempfile.gettempdir()).resolve()
+
+        # Invariant 1: Must be inside system temporary directory
+        resolved.relative_to(temp_root)
+
+        # Invariant 2: Must bear patchproof-staging prefix
+        if not resolved.name.startswith("patchproof-staging-"):
+            logger.error("Refusing cleanup: missing patchproof-staging prefix: %s", resolved)
+            return
+
+        # Invariant 3: Must not be a root or shallow path
+        if resolved == temp_root or str(resolved) == temp_root.root or len(resolved.parts) <= 2:
+            logger.error("Refusing cleanup: broad path detected: %s", resolved)
+            return
+
+        shutil.rmtree(resolved, ignore_errors=True)
+    except (ValueError, OSError) as err:
+        logger.warning("Staging cleanup error for %s: %s", staging_dir, err)
+
+
+class ComparativeRunner:
+    """Orchestrates isolated baseline and patched container runs and classifies regressions."""
+
+    def __init__(
+        self,
+        runner: ContainerRunner | None = None,
+        parser: PytestOutputParser | None = None,
+        classifier: RegressionClassifier | None = None,
+    ) -> None:
+        self.runner = runner or ContainerRunner()
+        self.parser = parser or PytestOutputParser()
+        self.classifier = classifier or RegressionClassifier()
+
+    def run(
+        self,
+        config: ContainerConfig,
+        patch: CanonicalPatch | str,
+    ) -> ComparativeExecutionResult:
+        """Execute baseline and patched container runs, isolating workspaces and verifying.
+
+        1. Validates the patch format.
+        2. Prepares ephemeral staging workspaces for baseline and patched runs.
+        3. Copies repository into baseline staging workspace (auditing symlinks).
+        4. Copies repository into patched staging workspace.
+        5. Executes baseline tests against baseline staging workspace.
+        6. Applies patch to the patched staging workspace.
+        7. Executes patched tests against patched staging workspace.
+        8. Reconciles test results and produces immutable ComparativeExecutionResult.
+        9. Guaranteed cleanup of all staging workspaces in finally block.
+        """
+        # Step 1: Pre-validate patch format
+        canonical_patch: CanonicalPatch
+        if isinstance(patch, str):
+            try:
+                if SEARCH_START in patch:
+                    canonical_patch = parse_search_replace(patch)
+                else:
+                    canonical_patch = parse_patch(patch)
+            except InvalidPatchFormatError as err:
+                dummy_res = ExecutionResult(
+                    exit_code=1,
+                    stderr=str(err),
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.SETUP_ERROR,
+                )
+                return ComparativeExecutionResult(
+                    baseline_result=dummy_res,
+                    patched_result=dummy_res,
+                    verdict=PatchVerdict.REJECTED,
+                    summary=f"Invalid patch format: {err}",
+                )
+        else:
+            canonical_patch = patch
+
+        # Step 2: Prepare ephemeral staging workspaces
+        baseline_staging = pathlib.Path(tempfile.mkdtemp(prefix="patchproof-staging-base-"))
+        patched_staging = pathlib.Path(tempfile.mkdtemp(prefix="patchproof-staging-patch-"))
+
+        try:
+            # Copy source tree safely with symlink traversal audit for baseline
+            try:
+                safe_copy_repository(config.host_repo_path, baseline_staging)
+            except SandboxSecurityError as err:
+                dummy_res = ExecutionResult(
+                    exit_code=1,
+                    stderr=f"Security violation during staging: {err}",
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.SETUP_ERROR,
+                )
+                return ComparativeExecutionResult(
+                    baseline_result=dummy_res,
+                    patched_result=dummy_res,
+                    verdict=PatchVerdict.REJECTED,
+                    summary=f"Security violation during staging: {err}",
+                )
+
+            # Copy source tree safely for patched
+            try:
+                safe_copy_repository(config.host_repo_path, patched_staging)
+            except SandboxSecurityError as err:
+                dummy_res = ExecutionResult(
+                    exit_code=1,
+                    stderr=f"Security violation during staging: {err}",
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.SETUP_ERROR,
+                )
+                return ComparativeExecutionResult(
+                    baseline_result=dummy_res,
+                    patched_result=dummy_res,
+                    verdict=PatchVerdict.REJECTED,
+                    summary=f"Security violation during staging: {err}",
+                )
+
+            # Step 3: Execute baseline test container
+            baseline_config = config.model_copy(update={"host_repo_path": str(baseline_staging)})
+            try:
+                base_raw = self.runner.run(baseline_config)
+            except DockerUnavailableError as err:
+                dummy_res = ExecutionResult(
+                    exit_code=1,
+                    stderr=str(err),
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.DOCKER_UNAVAILABLE,
+                )
+                return ComparativeExecutionResult(
+                    baseline_result=dummy_res,
+                    patched_result=dummy_res,
+                    verdict=PatchVerdict.INFRASTRUCTURE_FAILURE,
+                    summary=f"Infrastructure failure: Docker daemon is unavailable ({err})",
+                )
+            except UnsupportedDockerEngineError as err:
+                dummy_res = ExecutionResult(
+                    exit_code=1,
+                    stderr=str(err),
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.UNSUPPORTED_ENGINE,
+                )
+                return ComparativeExecutionResult(
+                    baseline_result=dummy_res,
+                    patched_result=dummy_res,
+                    verdict=PatchVerdict.INFRASTRUCTURE_FAILURE,
+                    summary=f"Infrastructure failure: Unsupported Docker engine ({err})",
+                )
+
+            base_report = self.parser.parse(
+                stdout=base_raw.stdout,
+                stderr=base_raw.stderr,
+                exit_code=base_raw.exit_code,
+                duration_seconds=base_raw.duration_seconds,
+            )
+            baseline_result = base_raw.model_copy(update={"test_report": base_report})
+
+            # Early abort only if baseline execution suffered infrastructure or collection failure
+            if (
+                baseline_result.failure_reason in BASELINE_INFRASTRUCTURE_FAILURES
+                or base_report.collection_failed
+            ):
+                return self.classifier.classify(baseline_result, baseline_result)
+
+            # Step 4: Apply patch to patched staging workspace
+            try:
+                apply_patch(canonical_patch, patched_staging)
+            except (PatchApplicationError, SandboxSecurityError) as err:
+                synthetic_patched = ExecutionResult(
+                    exit_code=1,
+                    stderr=f"Patch application failed: {err}",
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.SETUP_ERROR,
+                )
+                return self.classifier.classify(baseline_result, synthetic_patched)
+
+            # Step 5: Execute patched test container
+            patched_config = config.model_copy(update={"host_repo_path": str(patched_staging)})
+            try:
+                patched_raw = self.runner.run(patched_config)
+            except DockerUnavailableError as err:
+                dummy_res = ExecutionResult(
+                    exit_code=1,
+                    stderr=str(err),
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.DOCKER_UNAVAILABLE,
+                )
+                return ComparativeExecutionResult(
+                    baseline_result=baseline_result,
+                    patched_result=dummy_res,
+                    verdict=PatchVerdict.INFRASTRUCTURE_FAILURE,
+                    summary=f"Patched run infrastructure failure: Docker unavailable ({err})",
+                )
+            except UnsupportedDockerEngineError as err:
+                dummy_res = ExecutionResult(
+                    exit_code=1,
+                    stderr=str(err),
+                    duration_seconds=0.0,
+                    failure_reason=SandboxFailureReason.UNSUPPORTED_ENGINE,
+                )
+                return ComparativeExecutionResult(
+                    baseline_result=baseline_result,
+                    patched_result=dummy_res,
+                    verdict=PatchVerdict.INFRASTRUCTURE_FAILURE,
+                    summary=f"Patched run infrastructure failure: Unsupported engine ({err})",
+                )
+
+            patch_report = self.parser.parse(
+                stdout=patched_raw.stdout,
+                stderr=patched_raw.stderr,
+                exit_code=patched_raw.exit_code,
+                duration_seconds=patched_raw.duration_seconds,
+            )
+            patched_result = patched_raw.model_copy(update={"test_report": patch_report})
+
+            # Step 6: Reconcile and classify results
+            return self.classifier.classify(baseline_result, patched_result)
+
+        finally:
+            # Guaranteed staging workspaces cleanup
+            safe_cleanup_staging(baseline_staging)
+            safe_cleanup_staging(patched_staging)

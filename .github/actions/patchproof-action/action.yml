@@ -1,0 +1,91 @@
+name: "PatchProof Code Verification"
+description: "Deterministic, sandboxed code patch verification and regression prevention for AI-assisted engineering"
+author: "PatchProof Team"
+branding:
+  icon: "shield-check"
+  color: "green"
+
+inputs:
+  target:
+    description: "Verification target: 'head' (latest commit) or 'git' (working tree diff)"
+    required: false
+    default: "head"
+  test_command:
+    description: "Optional custom test execution command (e.g. 'pytest tests/ -q' or 'npm test')"
+    required: false
+  html_report:
+    description: "Path to output standalone visual HTML evidence report"
+    required: false
+    default: "patchproof-report.html"
+  json_output:
+    description: "Whether to emit structured machine-readable JSON"
+    required: false
+    default: "false"
+
+outputs:
+  verdict:
+    description: "Evaluation verdict: accepted, rejected, suspicious, or inconclusive"
+    value: ${{ steps.run-patchproof.outputs.verdict }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install PatchProof
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install .
+
+    - name: Run PatchProof Doctor
+      shell: bash
+      run: |
+        patchproof doctor
+
+    - name: Execute PatchProof Verification
+      id: run-patchproof
+      shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_TEST_COMMAND: ${{ inputs.test_command }}
+        INPUT_HTML_REPORT: ${{ inputs.html_report }}
+        INPUT_JSON_OUTPUT: ${{ inputs.json_output }}
+      run: |
+        ARGS=("verify")
+        if [ "$INPUT_TARGET" = "head" ]; then
+          ARGS+=("--head")
+        else
+          ARGS+=("--git")
+        fi
+
+        if [ -n "$INPUT_TEST_COMMAND" ]; then
+          ARGS+=("-c" "$INPUT_TEST_COMMAND")
+        fi
+
+        if [ -n "$INPUT_HTML_REPORT" ]; then
+          ARGS+=("--html" "$INPUT_HTML_REPORT")
+        fi
+
+        if [ "$INPUT_JSON_OUTPUT" = "true" ]; then
+          ARGS+=("--json")
+        fi
+
+        set +e
+        patchproof "${ARGS[@]}"
+        EXIT_CODE=$?
+
+        case $EXIT_CODE in
+          0) VERDICT="accepted" ;;
+          1) VERDICT="rejected" ;;
+          2) VERDICT="suspicious" ;;
+          3) VERDICT="inconclusive" ;;
+          4) VERDICT="infrastructure_failure" ;;
+          *) VERDICT="error" ;;
+        esac
+
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        exit $EXIT_CODE

@@ -134,3 +134,54 @@ diff --git a/src/users.py b/src/users.py
     assert file_rep.path == "src/users.py"
     assert any(e.name == "get_user" for e in file_rep.modified_entities)
     assert "log_access" in file_rep.syntactic_calls
+
+
+def test_nested_helper_function_classification():
+    """Verify closures inside methods are classified as FUNCTION, not METHOD."""
+    source = """\
+class Worker:
+    def process(self):
+        def helper():
+            return 42
+        return helper()
+"""
+    report = analyze_python_source(source, [(3, 4)], "worker.py")
+    funcs = [e for e in report.modified_entities if e.name == "helper"]
+    assert len(funcs) == 1
+    assert funcs[0].entity_type == EntityType.FUNCTION
+    assert funcs[0].parent_class is None
+
+
+def test_relative_imports():
+    """Verify static extraction of relative imports."""
+    source = """\
+from . import sibling
+from ..parent import grandparent
+import os
+"""
+    report = analyze_python_source(source, [(1, 1)], "module.py")
+    expected_matches = {".", ".sibling", "..parent"}
+    assert any(m in report.imported_modules for m in expected_matches)
+    assert "os" in report.imported_modules
+
+
+def test_pre_patch_coordinate_ranges():
+    """Verify pre_patch flag extracts old hunk line coordinates."""
+    diff = """\
+diff --git a/src/app.py b/src/app.py
+--- a/src/app.py
++++ b/src/app.py
+@@ -20,5 +30,1 @@
+-old_1
+-old_2
+-old_3
+-old_4
+-old_5
++new_1
+"""
+    patch = parse_patch(diff)
+    delta = patch.file_deltas[0]
+    post_ranges = extract_delta_line_ranges(delta, pre_patch=False)
+    pre_ranges = extract_delta_line_ranges(delta, pre_patch=True)
+    assert post_ranges == [(30, 30)]
+    assert pre_ranges == [(20, 24)]

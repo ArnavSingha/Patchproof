@@ -32,7 +32,7 @@ BINARY_DIFF_RE = re.compile(
 def _clean_path(path: str) -> str:
     """Normalize file path by stripping leading a/ or b/ prefixes, quotes, and timestamps."""
     clean = path.split("\t")[0].strip()
-    clean = clean.strip('"\'')
+    clean = clean.strip("\"'")
     if clean == "/dev/null":
         return "/dev/null"
     if clean.startswith("a/") or clean.startswith("b/"):
@@ -109,7 +109,7 @@ class _UnifiedDiffParser:
                 continue
 
             if line.startswith("Index: "):
-                idx_path = line[7:].strip().strip('"\'')
+                idx_path = line[7:].strip().strip("\"'")
                 if not old_path:
                     old_path = idx_path
                 if not new_path:
@@ -138,12 +138,12 @@ class _UnifiedDiffParser:
                 continue
 
             if line.startswith("rename from "):
-                old_path = line[12:].strip().strip('"\'')
+                old_path = line[12:].strip().strip("\"'")
                 self.idx += 1
                 continue
 
             if line.startswith("rename to "):
-                new_path = line[10:].strip().strip('"\'')
+                new_path = line[10:].strip().strip("\"'")
                 self.idx += 1
                 continue
 
@@ -161,22 +161,19 @@ class _UnifiedDiffParser:
                 break
 
             if line.startswith("--- "):
-                old_path = line[4:].strip().strip('"\'')
+                old_path = line[4:].strip().strip("\"'")
                 self.idx += 1
                 continue
 
             if line.startswith("+++ "):
-                new_path = line[4:].strip().strip('"\'')
+                new_path = line[4:].strip().strip("\"'")
                 self.idx += 1
                 break
 
             if line.startswith("@@ "):
                 break
 
-            if (
-                line.startswith("index ")
-                or line.startswith("similarity index ")
-            ):
+            if line.startswith("index ") or line.startswith("similarity index "):
                 self.idx += 1
                 continue
 
@@ -224,8 +221,7 @@ class _UnifiedDiffParser:
                     if is_mode_change or (old_path and new_path and old_path != new_path):
                         break
                     msg = (
-                        f"Unexpected content before next hunk/file "
-                        f"at line {self.idx + 1}: {line!r}"
+                        f"Unexpected content before next hunk/file at line {self.idx + 1}: {line!r}"
                     )
                     raise InvalidPatchFormatError(msg)
 
@@ -311,8 +307,7 @@ class _UnifiedDiffParser:
 
         if actual_old_count != old_lines or actual_new_count != new_lines:
             counts = (
-                f"expected -{old_lines}/+{new_lines}, "
-                f"found -{actual_old_count}/+{actual_new_count}"
+                f"expected -{old_lines}/+{new_lines}, found -{actual_old_count}/+{actual_new_count}"
             )
             msg = f"Hunk line count mismatch for header '{header_line}': {counts}"
             raise InvalidPatchFormatError(msg)
