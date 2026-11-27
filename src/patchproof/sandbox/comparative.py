@@ -7,12 +7,18 @@ import os
 import pathlib
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 from patchproof.core.applier import apply_patch
 from patchproof.core.git_provider import export_git_tree, is_git_repository
 from patchproof.core.normalizer import parse_patch
 from patchproof.core.runtime_guard import generate_runtime_guard_plugin
 from patchproof.core.search_replace import SEARCH_START, parse_search_replace
+from patchproof.core.sparse_tree import (
+    compute_minimal_common_ancestor,
+    extract_patch_modified_paths,
+    should_use_sparse_extraction,
+)
 from patchproof.exceptions import (
     DockerUnavailableError,
     InvalidPatchFormatError,
@@ -192,14 +198,34 @@ class ComparativeRunner:
         baseline_staging = pathlib.Path(tempfile.mkdtemp(prefix="patchproof-staging-base-"))
         patched_staging = pathlib.Path(tempfile.mkdtemp(prefix="patchproof-staging-patch-"))
 
+        # Determine if sparse tree extraction applies for monorepos
+        subtree_target: str | None = None
+        modified_paths = extract_patch_modified_paths(canonical_patch)
+        if modified_paths and should_use_sparse_extraction(modified_paths):
+            subtree_target = compute_minimal_common_ancestor(modified_paths)
+
         try:
-            # Step 2: Populate staging repositories
-            # Attempt pristine Git tree export first to guarantee clean baseline
+            # Step 2: Populate staging repositories concurrently
             git_isolated = False
             if is_git_repository(config.host_repo_path):
                 try:
-                    base_ok = export_git_tree(config.host_repo_path, "HEAD", baseline_staging)
-                    patch_ok = export_git_tree(config.host_repo_path, "HEAD", patched_staging)
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        fut_base = executor.submit(
+                            export_git_tree,
+                            config.host_repo_path,
+                            "HEAD",
+                            baseline_staging,
+                            subtree=subtree_target,
+                        )
+                        fut_patch = executor.submit(
+                            export_git_tree,
+                            config.host_repo_path,
+                            "HEAD",
+                            patched_staging,
+                            subtree=subtree_target,
+                        )
+                        base_ok = fut_base.result()
+                        patch_ok = fut_patch.result()
                     git_isolated = base_ok and patch_ok
                 except SandboxSecurityError as err:
                     dummy_res = ExecutionResult(
@@ -216,25 +242,21 @@ class ComparativeRunner:
                     )
 
             if not git_isolated:
-                # Fallback to direct safe_copy_repository for non-git or bare environments
+                # Fallback to concurrent safe_copy_repository for non-git or bare environments
                 try:
-                    safe_copy_repository(config.host_repo_path, baseline_staging)
-                except SandboxSecurityError as err:
-                    dummy_res = ExecutionResult(
-                        exit_code=1,
-                        stderr=f"Security violation during staging: {err}",
-                        duration_seconds=0.0,
-                        failure_reason=SandboxFailureReason.SETUP_ERROR,
-                    )
-                    return ComparativeExecutionResult(
-                        baseline_result=dummy_res,
-                        patched_result=dummy_res,
-                        verdict=PatchVerdict.REJECTED,
-                        summary=f"Security violation during staging: {err}",
-                    )
+                    def _do_copy(src: str | pathlib.Path, dst: pathlib.Path) -> bool:
+                        safe_copy_repository(src, dst)
+                        return True
 
-                try:
-                    safe_copy_repository(config.host_repo_path, patched_staging)
+                    with ThreadPoolExecutor(max_workers=2) as copy_executor:
+                        fut_base = copy_executor.submit(
+                            _do_copy, config.host_repo_path, baseline_staging
+                        )
+                        fut_patch = copy_executor.submit(
+                            _do_copy, config.host_repo_path, patched_staging
+                        )
+                        fut_base.result()
+                        fut_patch.result()
                 except SandboxSecurityError as err:
                     dummy_res = ExecutionResult(
                         exit_code=1,

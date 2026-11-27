@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from patchproof.models.patch import CanonicalPatch
+
 
 def compute_minimal_common_ancestor(modified_paths: Sequence[str]) -> str | None:
     """Calculate the shallowest common directory among all modified files in a patch.
@@ -45,10 +47,13 @@ def compute_minimal_common_ancestor(modified_paths: Sequence[str]) -> str | None
     return "/".join(common_segments) if common_segments else None
 
 
-def extract_patch_modified_paths(patch_content: str) -> list[str]:
-    """Extract list of target file paths modified by a unified diff or git patch."""
+def extract_patch_modified_paths(patch: str | CanonicalPatch) -> list[str]:
+    """Extract list of target file paths modified by a unified diff or CanonicalPatch."""
+    if isinstance(patch, CanonicalPatch):
+        return [delta.path for delta in patch.file_deltas if delta.path]
+
     paths: list[str] = []
-    for line in patch_content.splitlines():
+    for line in patch.splitlines():
         if line.startswith("+++ "):
             # Strip +++ and b/ prefix if present
             raw_target = line[4:].strip()
