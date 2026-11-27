@@ -871,3 +871,64 @@ class TestCliReporting:
         cert_ret = main(["verify-cert", str(cert_file), "--public-key", str(pub_path)])
         assert cert_ret == ExitCode.ACCEPTED
 
+
+def test_cli_factory_evaluate_contained(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_file = tmp_path / "doc.patch"
+    patch_file.write_text(
+        "--- a/docs/README.md\n+++ b/docs/README.md\n@@ -1,1 +1,2 @@\n # Title\n+Line\n",
+        encoding="utf-8",
+    )
+    ret = main(["factory", "evaluate", str(patch_file), "--json"])
+    assert ret == ExitCode.ACCEPTED
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["lineage"] == "lineage_a"
+    assert data["risk_level"] == "low"
+    assert data["is_contained"] is True
+
+
+def test_cli_factory_evaluate_breaking(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_file = tmp_path / "core.patch"
+    patch_file.write_text(
+        "--- a/src/patchproof/sandbox/docker_cli.py\n"
+        "+++ b/src/patchproof/sandbox/docker_cli.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " import os\n"
+        "+run()\n",
+        encoding="utf-8",
+    )
+    ret = main(["factory", "evaluate", str(patch_file)])
+    assert ret == ExitCode.ACCEPTED
+    captured = capsys.readouterr()
+    assert "Lineage B (Breaking / Level 3)" in captured.out
+
+
+def test_cli_factory_run_success(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch_file = tmp_path / "valid.patch"
+    patch_file.write_text(
+        "--- a/docs/README.md\n+++ b/docs/README.md\n@@ -1,1 +1,2 @@\n # Title\n+Line\n",
+        encoding="utf-8",
+    )
+    ret = main([
+        "factory",
+        "run",
+        "--trigger",
+        "issue-42",
+        "--patch",
+        str(patch_file),
+        "--json",
+    ])
+    assert ret == ExitCode.ACCEPTED
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["status"] == "passed"
+    assert data["lineage"] == "lineage_a"
+    assert data["shipped_to_production"] is True
+
+

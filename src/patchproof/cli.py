@@ -33,6 +33,9 @@ from patchproof.exceptions import (
     SandboxSecurityError,
     UnsupportedDockerEngineError,
 )
+from patchproof.factory.blast_radius import BlastRadiusClassifier
+from patchproof.factory.engine import FactoryEngine, GateResult
+from patchproof.factory.models import FactoryLineage, HybridLoopState
 from patchproof.mcp import MCPServer
 from patchproof.models.patch import CanonicalPatch
 from patchproof.models.sandbox import (
@@ -374,6 +377,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to target repository on host (default: current directory)",
     )
 
+    factory_parser = subparsers.add_parser(
+        "factory",
+        help="AI Software Factory: assess blast radius and run autonomous hybrid loop",
+    )
+    factory_sub = factory_parser.add_subparsers(
+        dest="factory_action",
+        metavar="ACTION",
+        required=True,
+    )
+
+    eval_parser = factory_sub.add_parser(
+        "evaluate",
+        help="Assess blast radius and assign Lineage A or Lineage B",
+    )
+    eval_parser.add_argument(
+        "patch", nargs="?", default=None, help="Path to patch file, or '-' for stdin"
+    )
+    eval_parser.add_argument(
+        "--git",
+        action="store_true",
+        help="Evaluate uncommitted changes in git working tree",
+    )
+    eval_parser.add_argument(
+        "--head", action="store_true", help="Evaluate git HEAD commit diff"
+    )
+    eval_parser.add_argument(
+        "--json", action="store_true", help="Output blast radius report as JSON"
+    )
+    eval_parser.add_argument("--repo", default=".", help="Repository root path")
+
+    run_parser = factory_sub.add_parser(
+        "run",
+        help="Execute autonomous hybrid loop on a trigger signal",
+    )
+    run_parser.add_argument(
+        "--trigger", required=True, help="Trigger signal identifier or description"
+    )
+    run_parser.add_argument("--patch", default=None, help="Path to candidate patch file")
+    run_parser.add_argument("--repo", default=".", help="Repository root path")
+    run_parser.add_argument(
+        "--max-retries", type=int, default=3, help="Max retry loops (default: 3)"
+    )
+    run_parser.add_argument(
+        "--json", action="store_true", help="Output final result as JSON"
+    )
+
     return parser
 
 
@@ -692,6 +741,107 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             sys.stderr.write(f"patchproof: {heal_res.summary}\n")
             return ExitCode.REJECTED
+
+    if args.command == "factory":
+        if args.factory_action == "evaluate":
+            target_repo = pathlib.Path(args.repo).resolve()
+            eval_patch: str
+            if args.git:
+                try:
+                    eval_patch = get_uncommitted_diff(target_repo)
+                except NoChangesDetectedError:
+                    sys.stdout.write("patchproof: working tree is clean; no changes to evaluate.\n")
+                    return ExitCode.ACCEPTED
+                except GitRepositoryError as err:
+                    sys.stderr.write(f"patchproof: error: {err}\n")
+                    return ExitCode.CLI_ERROR
+            elif args.head:
+                try:
+                    eval_patch = get_head_diff(target_repo)
+                except NoChangesDetectedError:
+                    sys.stdout.write("patchproof: HEAD commit introduces no diff changes.\n")
+                    return ExitCode.ACCEPTED
+                except GitRepositoryError as err:
+                    sys.stderr.write(f"patchproof: error: {err}\n")
+                    return ExitCode.CLI_ERROR
+            elif args.patch == "-":
+                eval_patch = sys.stdin.read()
+            elif args.patch:
+                p_file = pathlib.Path(args.patch)
+                if not p_file.is_file():
+                    sys.stderr.write(f"patchproof: error: patch file not found: {args.patch}\n")
+                    return ExitCode.CLI_ERROR
+                eval_patch = p_file.read_text(encoding="utf-8")
+            else:
+                sys.stderr.write("patchproof: error: must specify patch file, --git, or --head\n")
+                return ExitCode.CLI_ERROR
+
+            classifier = BlastRadiusClassifier()
+            report = classifier.assess_patch(eval_patch)
+
+            if args.json:
+                sys.stdout.write(report.model_dump_json(indent=2) + "\n")
+            else:
+                lineage_label = (
+                    "Lineage A (Contained / Level 4)"
+                    if report.lineage == FactoryLineage.LINEAGE_A
+                    else "Lineage B (Breaking / Level 3)"
+                )
+                sys.stdout.write(
+                    f"patchproof factory: Blast Radius Assessment\n"
+                    f"  Risk Level: {report.risk_level.value.upper()}\n"
+                    f"  Routing:    {lineage_label}\n"
+                    f"  Contained:  {report.is_contained}\n"
+                    f"  Rationale:  {report.rationale}\n"
+                )
+            return ExitCode.ACCEPTED
+
+        if args.factory_action == "run":
+            target_repo = pathlib.Path(args.repo).resolve()
+            engine = FactoryEngine(max_retries=args.max_retries)
+
+            candidate_patch = ""
+            if args.patch:
+                p_path = pathlib.Path(args.patch)
+                if p_path.is_file():
+                    candidate_patch = p_path.read_text(encoding="utf-8")
+
+            def generator(_: str | None) -> str:
+                if candidate_patch:
+                    return candidate_patch
+                try:
+                    return get_uncommitted_diff(target_repo)
+                except Exception:
+                    return ""
+
+            def gate(patch_str: str) -> GateResult:
+                if not patch_str.strip():
+                    return GateResult(passed=False, diagnostics="Empty patch content")
+                return GateResult(passed=True, diagnostics="")
+
+            res = engine.run(
+                run_id=f"run-{abs(hash(args.trigger)) % 100000}",
+                generator_fn=generator,
+                gate_fn=gate,
+            )
+
+            if args.json:
+                sys.stdout.write(res.model_dump_json(indent=2) + "\n")
+            else:
+                sys.stdout.write(
+                    f"patchproof factory: Run Completed\n"
+                    f"  Run ID:    {res.run_id}\n"
+                    f"  Status:    {res.status.value}\n"
+                    f"  Lineage:   {res.lineage.value}\n"
+                    f"  Shipped:   {res.shipped_to_production}\n"
+                    f"  Needs Operator Approval: {res.operator_approval_required}\n"
+                )
+
+            return (
+                ExitCode.ACCEPTED
+                if res.status == HybridLoopState.PASSED
+                else ExitCode.REJECTED
+            )
 
     if args.command != "verify":
         sys.stderr.write(f"patchproof: unknown command: {args.command}\n")
