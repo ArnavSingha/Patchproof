@@ -36,6 +36,12 @@ inputs:
     description: "Path to output cryptographic Proof-of-Patch certificate"
     required: false
     default: "patchproof.cert.json"
+  private_key:
+    description: "Optional Ed25519 private key file or PEM string to cryptographically sign the certificate"
+    required: false
+  signer_identity:
+    description: "Signer identity URI or handle (e.g. github.com/owner/repo/ci)"
+    required: false
   comment_pr:
     description: "Automatically post/update rich Markdown proof card as a PR comment"
     required: false
@@ -87,6 +93,8 @@ runs:
         INPUT_IMAGE: ${{ inputs.image }}
         INPUT_HTML_REPORT: ${{ inputs.html_report }}
         INPUT_CERT: ${{ inputs.cert }}
+        INPUT_PRIVATE_KEY: ${{ inputs.private_key }}
+        INPUT_SIGNER_IDENTITY: ${{ inputs.signer_identity }}
       run: |
         ARGS=("verify")
         if [ "$INPUT_TARGET" = "head" ]; then
@@ -121,6 +129,14 @@ runs:
 
         if [ -n "$INPUT_CERT" ]; then
           ARGS+=("--cert" "$INPUT_CERT")
+        fi
+
+        if [ -n "$INPUT_PRIVATE_KEY" ]; then
+          ARGS+=("--private-key" "$INPUT_PRIVATE_KEY")
+        fi
+
+        if [ -n "$INPUT_SIGNER_IDENTITY" ]; then
+          ARGS+=("--signer-identity" "$INPUT_SIGNER_IDENTITY")
         fi
 
         SUMMARY_FILE="patchproof-summary.md"

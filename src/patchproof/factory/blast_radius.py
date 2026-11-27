@@ -16,6 +16,8 @@ from patchproof.models.patch import FileDelta
 CORE_SENSITIVE_PREFIXES: tuple[str, ...] = (
     "src/patchproof/core/",
     "src/patchproof/sandbox/",
+    "src/patchproof/reporting/",
+    "src/patchproof/models/",
     ".github/workflows/",
 )
 

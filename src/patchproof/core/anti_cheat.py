@@ -283,10 +283,15 @@ def audit_patch_integrity(
         # For modifications to existing test files
         target_file = root_path / delta.path
         if not target_file.is_file():
-            # Newly added test file in patch
+            # If allow_test_edits is False and patch creates or edits test file, flag violation
             if not allow_test_edits:
-                # Adding new test files when test edits are not allowed
-                pass
+                all_violations.append(
+                    TamperingViolation(
+                        violation_type=TamperingViolationType.TEST_SUPPRESSION_INJECTED,
+                        file_path=delta.path,
+                        details=f"Unpermitted test modification in patch: '{delta.path}'",
+                    )
+                )
             continue
 
         try:
