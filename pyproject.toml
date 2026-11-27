@@ -8,11 +8,40 @@ version = "0.1.0"
 description = "Deterministic code-patch verification and reliability engine for AI-assisted engineering"
 readme = "README.md"
 authors = [{ name = "PatchProof Team" }]
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 requires-python = ">=3.11"
+keywords = [
+    "testing",
+    "verification",
+    "sandbox",
+    "docker",
+    "ai-agents",
+    "anti-cheat",
+    "diff",
+    "patch",
+    "mcp",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "pydantic>=2.0.0,<3.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ArnavSingha/Patchproof"
+Repository = "https://github.com/ArnavSingha/Patchproof"
+Documentation = "https://github.com/ArnavSingha/Patchproof#readme"
+"Bug Tracker" = "https://github.com/ArnavSingha/Patchproof/issues"
 
 [project.scripts]
 patchproof = "patchproof.cli:main"
@@ -22,10 +51,14 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    "build>=1.0.0",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.Dockerfile", "docker/*"]
 
 [tool.ruff]
 line-length = 100
