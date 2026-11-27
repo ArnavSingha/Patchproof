@@ -68,6 +68,7 @@ def export_git_tree(
     repo_path: pathlib.Path | str,
     ref: str,
     dest_dir: pathlib.Path | str,
+    subtree: str | None = None,
 ) -> bool:
     """Export pristine git tree at ref into dest_dir without touching working copy.
 
@@ -75,15 +76,22 @@ def export_git_tree(
     Rejects and fails closed on any path traversal attacks inside tar archive members.
 
     Raises:
-        SandboxSecurityError: If tar archive contains path traversal sequences.
+        SandboxSecurityError: If tar archive or subtree contains path traversal sequences.
     """
     resolved_repo = pathlib.Path(repo_path).resolve()
     dest_root = pathlib.Path(dest_dir).resolve()
     dest_root.mkdir(parents=True, exist_ok=True)
 
+    archive_cmd = ["git", "archive", ref]
+    if subtree:
+        clean_sub = subtree.replace("\\", "/").strip("/")
+        if ".." in clean_sub or clean_sub.startswith("/"):
+            raise SandboxSecurityError(f"Path traversal detected in export subtree: {subtree}")
+        archive_cmd.append(f"{clean_sub}/")
+
     try:
         res = subprocess.run(
-            ["git", "archive", ref],
+            archive_cmd,
             cwd=str(resolved_repo),
             capture_output=True,
             shell=False,

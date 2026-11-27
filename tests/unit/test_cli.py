@@ -800,3 +800,74 @@ class TestCliReporting:
         assert "<!-- patchproof-attestation-marker -->" in content
         assert "ACCEPTED" in content
         assert cert_file.is_file()
+
+    def test_keygen_subcommand_generates_ed25519_keypair(self, tmp_path: pathlib.Path) -> None:
+        """patchproof keygen produces valid private and public key files."""
+        out_dir = tmp_path / "keys"
+        ret = main(["keygen", "--out-dir", str(out_dir), "--name", "my_key"])
+        assert ret == ExitCode.ACCEPTED
+        priv_file = out_dir / "my_key.pem"
+        pub_file = out_dir / "my_key.pub"
+        assert priv_file.is_file()
+        assert pub_file.is_file()
+        assert "-----BEGIN PRIVATE KEY-----" in priv_file.read_text(encoding="utf-8")
+        assert "-----BEGIN PUBLIC KEY-----" in pub_file.read_text(encoding="utf-8")
+
+    @patch("patchproof.cli.ComparativeRunner")
+    def test_verify_and_verify_cert_asymmetric_roundtrip(
+        self,
+        mock_runner_cls: MagicMock,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Roundtrip verification using --private-key and verify-cert --public-key."""
+        # 1. Generate keypair
+        keys_dir = tmp_path / "keys"
+        main(["keygen", "--out-dir", str(keys_dir), "--name", "id_ed25519"])
+        priv_path = keys_dir / "id_ed25519.pem"
+        pub_path = keys_dir / "id_ed25519.pub"
+
+        # 2. Run verify with --cert and --private-key
+        patch_file = tmp_path / "test.patch"
+        patch_file.write_text("--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n")
+        cert_file = tmp_path / "proof.cert.json"
+
+        mock_runner = MagicMock()
+        mock_result = MagicMock(
+            verdict=PatchVerdict.ACCEPTED,
+            summary="Clean preservation",
+            introduced_regressions_count=0,
+            resolved_defects_count=0,
+            removed_tests_count=0,
+            suppressed_tests_count=0,
+            test_tampering_detected=False,
+            tampering_details=(),
+            test_comparisons=(),
+            baseline_result=MagicMock(
+                exit_code=0, stdout="", duration_seconds=0.01, test_report=None
+            ),
+            patched_result=MagicMock(
+                exit_code=0, stdout="", duration_seconds=0.01, stderr="", test_report=None
+            ),
+        )
+        mock_runner.run.return_value = mock_result
+        mock_runner_cls.return_value = mock_runner
+
+        ret = main([
+            "verify",
+            str(patch_file),
+            "--repo",
+            str(tmp_path),
+            "--cert",
+            str(cert_file),
+            "--private-key",
+            str(priv_path),
+            "--signer-identity",
+            "ci.patchproof.io/runner",
+        ])
+        assert ret == ExitCode.ACCEPTED
+        assert cert_file.is_file()
+
+        # 3. Validate certificate via verify-cert with public key
+        cert_ret = main(["verify-cert", str(cert_file), "--public-key", str(pub_path)])
+        assert cert_ret == ExitCode.ACCEPTED
+

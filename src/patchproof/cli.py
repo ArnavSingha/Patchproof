@@ -191,6 +191,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write cryptographic Proof-of-Patch certificate to specified path",
     )
     verify_parser.add_argument(
+        "--secret-key",
+        default=None,
+        help="Custom secret key for HMAC certificate signing",
+    )
+    verify_parser.add_argument(
+        "--private-key",
+        default=None,
+        help="Path to Ed25519 private key PEM file for asymmetric certificate signing",
+    )
+    verify_parser.add_argument(
+        "--signer-identity",
+        default=None,
+        help="Signer identity string (e.g. CI workflow or actor)",
+    )
+    verify_parser.add_argument(
         "--markdown",
         "--summary-file",
         default=None,
@@ -298,6 +313,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start built-in Model Context Protocol (MCP) server over standard I/O",
     )
 
+    keygen_parser = subparsers.add_parser(
+        "keygen",
+        help="Generate Ed25519 cryptographic keypair for Proof-of-Patch attestation",
+    )
+    keygen_parser.add_argument(
+        "--out-dir",
+        default=".",
+        help="Directory to save generated keypair (default: current directory)",
+    )
+    keygen_parser.add_argument(
+        "--name",
+        default="patchproof_key",
+        help="Base name for key files (default: patchproof_key)",
+    )
+
     verify_cert_parser = subparsers.add_parser(
         "verify-cert",
         help="Validate cryptographic signature and integrity of a Proof-of-Patch certificate",
@@ -310,6 +340,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--secret-key",
         default=None,
         help="Custom HMAC secret key used for validation",
+    )
+    verify_cert_parser.add_argument(
+        "--public-key",
+        default=None,
+        help="Path to Ed25519 public key file (.pub / PEM)",
     )
 
     heal_parser = subparsers.add_parser(
@@ -557,6 +592,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return ExitCode.ACCEPTED
 
+    if args.command == "keygen":
+        out_dir = pathlib.Path(args.out_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        priv_path = out_dir / f"{args.name}.pem"
+        pub_path = out_dir / f"{args.name}.pub"
+        from patchproof.reporting.asymmetric import generate_ed25519_keypair
+
+        priv_pem, pub_pem = generate_ed25519_keypair()
+        priv_path.write_text(priv_pem, encoding="utf-8")
+        pub_path.write_text(pub_pem, encoding="utf-8")
+        sys.stdout.write(
+            f"patchproof: Generated Ed25519 keypair:\n"
+            f"  Private key: {priv_path}\n"
+            f"  Public key:  {pub_path}\n"
+        )
+        return ExitCode.ACCEPTED
+
     if args.command == "verify-cert":
         cert_path = pathlib.Path(args.certificate)
         if not cert_path.is_file():
@@ -569,7 +621,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(f"patchproof: error: invalid certificate format: {err}\n")
             return ExitCode.CLI_ERROR
 
-        if verify_certificate(cert, secret_key=args.secret_key):
+        pub_key_pem = None
+        if args.public_key:
+            pub_path = pathlib.Path(args.public_key)
+            if not pub_path.is_file():
+                sys.stderr.write(
+                    f"patchproof: error: public key file not found: {args.public_key}\n"
+                )
+                return ExitCode.CLI_ERROR
+            pub_key_pem = pub_path.read_text(encoding="utf-8")
+
+        if verify_certificate(cert, secret_key=args.secret_key, public_key_pem=pub_key_pem):
             sys.stdout.write(
                 "patchproof: Proof-of-Patch certificate verified valid and untampered.\n"
             )
@@ -778,7 +840,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.cert:
         cert_out = pathlib.Path(args.cert)
         try:
-            cert_obj = generate_certificate(result, patch_content=patch_content)
+            signing_key_pem: str | None = None
+            if args.private_key:
+                pk_path = pathlib.Path(args.private_key)
+                if pk_path.is_file():
+                    signing_key_pem = pk_path.read_text(encoding="utf-8")
+                else:
+                    sys.stderr.write(
+                        f"patchproof: warning: private key file not found: {args.private_key}\n"
+                    )
+            cert_obj = generate_certificate(
+                result,
+                patch_content=patch_content,
+                secret_key=args.secret_key,
+                private_key_pem=signing_key_pem,
+                signer_identity=args.signer_identity,
+            )
             export_certificate(cert_obj, cert_out)
             if not args.json:
                 sys.stdout.write(f"patchproof: Proof-of-Patch certificate written to {cert_out}\n")
