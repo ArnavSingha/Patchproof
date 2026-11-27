@@ -61,6 +61,26 @@ class NetworkMode(StrEnum):
     """Allowed network isolation modes."""
 
     NONE = "none"
+    INTERNAL_BRIDGE = "internal"
+
+
+class SandboxNetworkConfig(BaseModel):
+    """Configuration for ephemeral network topology and intra-sandbox multi-service sidecars."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: NetworkMode = Field(default=NetworkMode.NONE)
+    network_name: str | None = Field(default=None)
+    sidecars: tuple[str, ...] = Field(default=())
+
+    @field_validator("network_name")
+    @classmethod
+    def _validate_network_name(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith("patchproof-net-"):
+            raise SandboxSecurityError(
+                f"Custom network must begin with 'patchproof-net-' prefix: {v}"
+            )
+        return v
 
 
 class TestOutcome(StrEnum):
@@ -134,6 +154,7 @@ class SecurityPolicy(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     network_mode: NetworkMode = Field(default=NetworkMode.NONE)
+    network_name: str | None = Field(default=None)
     user: str = Field(default="10001:10001")
     drop_capabilities: tuple[str, ...] = Field(default=("ALL",))
     no_new_privileges: bool = Field(default=True)
@@ -153,9 +174,19 @@ class SecurityPolicy(BaseModel):
     @field_validator("network_mode", mode="before")
     @classmethod
     def _validate_network_mode(cls, v: Any) -> Any:
-        if v not in (NetworkMode.NONE, "none"):
+        if v in (NetworkMode.NONE, "none", NetworkMode.INTERNAL_BRIDGE, "internal"):
+            return v
+        raise SandboxSecurityError(
+            f"Invalid network mode '{v}'. Only NetworkMode.NONE is permitted "
+            "(or NetworkMode.INTERNAL_BRIDGE for intra-sandbox sidecar bridge)"
+        )
+
+    @field_validator("network_name")
+    @classmethod
+    def _validate_network_name(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith("patchproof-net-"):
             raise SandboxSecurityError(
-                "Only NetworkMode.NONE is permitted for untrusted code execution"
+                f"Custom network must begin with 'patchproof-net-' prefix: {v}"
             )
         return v
 
@@ -229,6 +260,7 @@ class ContainerConfig(BaseModel):
     image: str = Field(default="patchproof-runner-python:3.11")
     resources: ResourceLimits = Field(default_factory=ResourceLimits)
     security: SecurityPolicy = Field(default_factory=SecurityPolicy)
+    network: SandboxNetworkConfig = Field(default_factory=SandboxNetworkConfig)
     environment: ContainerEnvironment = Field(default_factory=ContainerEnvironment)
     host_repo_path: str
     container_workspace_path: str = Field(default="/workspace")

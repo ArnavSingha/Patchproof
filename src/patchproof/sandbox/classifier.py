@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from patchproof.core.runtime_guard import (
+    extract_runtime_profile,
+    reconcile_runtime_profiles,
+)
 from patchproof.models.sandbox import (
     ComparativeExecutionResult,
     ComparativeTestCase,
@@ -136,10 +140,18 @@ class RegressionClassifier:
                 )
             )
 
-        # 4. Formulate empirical verdict
+        # 4. Dynamic runtime profile reconciliation
+        base_profile = extract_runtime_profile(baseline_result.stdout)
+        patch_profile = extract_runtime_profile(patched_result.stdout)
+        dynamic_tampered, dynamic_reason = reconcile_runtime_profiles(base_profile, patch_profile)
+
+        # 5. Formulate empirical verdict
         if introduced_regressions > 0:
             verdict = PatchVerdict.REJECTED
             summary = f"Patch rejected: introduced {introduced_regressions} regression(s)"
+        elif dynamic_tampered:
+            verdict = PatchVerdict.SUSPICIOUS
+            summary = f"Patch flagged suspicious: {dynamic_reason}"
         elif removed_tests > 0:
             verdict = PatchVerdict.SUSPICIOUS
             summary = (
@@ -178,6 +190,8 @@ class RegressionClassifier:
             pre_existing_failures_count=pre_existing_failures,
             suppressed_tests_count=suppressed_tests,
             removed_tests_count=removed_tests,
+            test_tampering_detected=dynamic_tampered,
+            tampering_details=(dynamic_reason,) if dynamic_reason else (),
             collection_failure_occurred=False,
             summary=summary,
         )

@@ -146,10 +146,21 @@ class DockerCommandBuilder:
         if container_name:
             cmd.extend(["--name", container_name])
 
+        if self.config.security.network_mode == NetworkMode.INTERNAL_BRIDGE:
+            net_name = self.config.security.network_name or self.config.network.network_name
+            if not net_name or not net_name.startswith("patchproof-net-"):
+                raise SandboxSecurityError(
+                    "NetworkMode.INTERNAL_BRIDGE requires a verified "
+                    "'patchproof-net-*' network name"
+                )
+            network_arg = net_name
+        else:
+            network_arg = NetworkMode.NONE.value
+
         cmd.extend(
             [
                 "--network",
-                self.config.security.network_mode.value,
+                network_arg,
                 "--user",
                 self.config.security.user,
                 "--cap-drop",
@@ -217,8 +228,14 @@ class DockerCommandBuilder:
                 raise SandboxSecurityError(f"Missing required security flag: {flag}")
 
         net_idx = cmd.index("--network")
-        if net_idx + 1 >= len(cmd) or cmd[net_idx + 1] != NetworkMode.NONE.value:
-            raise SandboxSecurityError("Invalid network mode in command: must be 'none'")
+        if net_idx + 1 >= len(cmd):
+            raise SandboxSecurityError("Missing argument for --network")
+        net_arg = cmd[net_idx + 1]
+        if net_arg != NetworkMode.NONE.value and not net_arg.startswith("patchproof-net-"):
+            raise SandboxSecurityError(
+                f"Invalid network mode '{net_arg}' in command: violates sandbox isolation policy. "
+                "Only 'none' or 'patchproof-net-*' internal networks are permitted."
+            )
 
         user_idx = cmd.index("--user")
         if user_idx + 1 >= len(cmd):

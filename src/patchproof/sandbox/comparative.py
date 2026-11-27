@@ -11,6 +11,7 @@ import tempfile
 from patchproof.core.applier import apply_patch
 from patchproof.core.git_provider import export_git_tree, is_git_repository
 from patchproof.core.normalizer import parse_patch
+from patchproof.core.runtime_guard import generate_runtime_guard_plugin
 from patchproof.core.search_replace import SEARCH_START, parse_search_replace
 from patchproof.exceptions import (
     DockerUnavailableError,
@@ -24,6 +25,7 @@ from patchproof.models.sandbox import (
     ComparativeExecutionResult,
     ComparativeTestCase,
     ContainerConfig,
+    ContainerEnvironment,
     ExecutionResult,
     PatchVerdict,
     RegressionClassification,
@@ -247,8 +249,30 @@ class ComparativeRunner:
                         summary=f"Security violation during staging: {err}",
                     )
 
+            # Inject PatchProof dynamic runtime assertion guard into staging trees
+            guard_source = generate_runtime_guard_plugin()
+            (baseline_staging / "patchproof_runtime_guard.py").write_text(
+                guard_source, encoding="utf-8"
+            )
+            (patched_staging / "patchproof_runtime_guard.py").write_text(
+                guard_source, encoding="utf-8"
+            )
+
+            # Enable auto-loading of runtime guard plugin in pytest
+            current_env = dict(config.environment.env_vars)
+            existing_pytest_opts = current_env.get("PYTEST_ADDOPTS", "")
+            combined_opts = f"{existing_pytest_opts} -p patchproof_runtime_guard".strip()
+            guarded_env = ContainerEnvironment(
+                env_vars=(
+                    *tuple((k, v) for k, v in current_env.items() if k != "PYTEST_ADDOPTS"),
+                    ("PYTEST_ADDOPTS", combined_opts),
+                )
+            )
+
             # Step 3: Execute baseline test container
-            baseline_config = config.model_copy(update={"host_repo_path": str(baseline_staging)})
+            baseline_config = config.model_copy(
+                update={"host_repo_path": str(baseline_staging), "environment": guarded_env}
+            )
             try:
                 base_raw = self.runner.run(baseline_config)
             except DockerUnavailableError as err:
@@ -306,7 +330,9 @@ class ComparativeRunner:
                 return self.classifier.classify(baseline_result, synthetic_patched)
 
             # Step 5: Execute patched test container
-            patched_config = config.model_copy(update={"host_repo_path": str(patched_staging)})
+            patched_config = config.model_copy(
+                update={"host_repo_path": str(patched_staging), "environment": guarded_env}
+            )
             try:
                 patched_raw = self.runner.run(patched_config)
             except DockerUnavailableError as err:
